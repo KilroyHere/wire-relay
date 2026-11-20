@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.0.2';
+const VERSION = '2.0.3';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const BACKUP_NAME = 'wire-contacts.enc.json';
@@ -67,7 +67,10 @@ const HELP = `wire ${VERSION}
   wire whoami | wire rules`;
 
 // ---------- utils ----------
-function die(m) { console.error(m); process.exit(1); }
+// In one-shot commands a failure ends the command. Inside `listen` it must never end the listener:
+// failures there throw, and the stream code logs them and carries on (it reconnects on its own).
+let LONG_RUNNING = false;
+function die(m) { if (LONG_RUNNING) throw new Error(m); console.error(m); process.exit(1); }
 const b64u = (buf) => Buffer.from(buf).toString('base64url');
 const rand = (n) => b64u(crypto.randomBytes(n));
 const shaHex = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -349,6 +352,8 @@ if (cmd === 'init') {
 
 } else if (cmd === 'listen') {
   // One stdout line per event, for Claude Code's Monitor tool. Follows all contacts; picks up new ones.
+  LONG_RUNNING = true;
+  process.on('uncaughtException', (e) => console.error(`wire listen: ${e.message} (continuing)`));
   const me = needMe(c), handle = sessionHandle(me), streams = new Map(), seenLobby = new Set(), announced = new Set();
   const out = (s) => process.stdout.write(s.replace(/\n+$/, '') + '\n');
   const start = (key) => {
