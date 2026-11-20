@@ -83,11 +83,16 @@ export class PairV2 extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.schema();
+    this.streams = new Map(); // `${side}:${handle}` -> { side, handle, write, close }
+  }
+
+  // Called again after deleteAll() (revoke / expiry), which drops the tables but keeps this instance alive.
+  schema() {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS conv (id TEXT PRIMARY KEY, title TEXT, opener TEXT, created INTEGER,
       last INTEGER, closed INTEGER DEFAULT 0, note TEXT, att_a TEXT, att_b TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS msg (id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT, sender TEXT, body TEXT, ts INTEGER)`);
-    this.streams = new Map(); // `${side}:${handle}` -> { side, handle, write, close }
   }
 
   get(k) { const r = this.sql.exec(`SELECT v FROM meta WHERE k = ?`, k).toArray()[0]; return r ? r.v : null; }
@@ -257,6 +262,7 @@ export class PairV2 extends DurableObject {
     for (const s of [...this.streams.values()]) s.close();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    this.schema();
     return json({ ok: true });
   }
 
@@ -264,6 +270,7 @@ export class PairV2 extends DurableObject {
     const now = Date.now();
     if (!this.get('claimed') && Number(this.get('created')) < now - INVITE_TTL) {
       await this.ctx.storage.deleteAll();
+      this.schema();
       return;
     }
     this.sql.exec(`DELETE FROM msg WHERE ts < ?`, now - MSG_TTL);
