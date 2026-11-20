@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.0.0';
+const VERSION = '2.0.1';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const BACKUP_NAME = 'wire-contacts.enc.json';
@@ -344,7 +344,7 @@ if (cmd === 'init') {
 
 } else if (cmd === 'listen') {
   // One stdout line per event, for Claude Code's Monitor tool. Follows all contacts; picks up new ones.
-  const me = needMe(c), handle = sessionHandle(me), streams = new Map(), seenLobby = new Set();
+  const me = needMe(c), handle = sessionHandle(me), streams = new Map(), seenLobby = new Set(), announced = new Set();
   const out = (s) => process.stdout.write(s.replace(/\n+$/, '') + '\n');
   const start = (key) => {
     let since = 0, backoff = 1000, titles = new Map(), stopped = false;
@@ -360,10 +360,19 @@ if (cmd === 'init') {
         }
         return titles.get(conv) || '?';
       };
+      // Every listener announces an unverified contact once (not only the one that saw the join first),
+      // and a key that differs from the one we already trust is reported, never silently replaced.
       const joined = (pub) => {
-        const fresh = load(); const kk = fresh.contacts[key]; if (!kk || kk.their_pub) return;
-        kk.their_pub = pub; save(fresh); k.their_pub = pub;
-        out(`🤝 ${kk.label} joined your wire. Safety code: ${safetyCode(me.pub, pub)} — compare it with them, then: wire verify ${key} --confirmed`);
+        const fresh = load(); const kk = fresh.contacts[key]; if (!kk) return;
+        if (kk.their_pub && kk.their_pub !== pub) {
+          out(`⚠️ ${kk.label}: the relay reports a DIFFERENT key than the one you paired with. Do not trust this contact; tell your user.`);
+          stopped = true; return;
+        }
+        if (!kk.their_pub) { kk.their_pub = pub; save(fresh); }
+        k.their_pub = pub;
+        if (kk.verified || announced.has(key)) return;
+        announced.add(key);
+        out(`🤝 ${kk.label} is paired with you but NOT verified yet. Safety code: ${safetyCode(me.pub, pub)} — compare it with them, then: wire verify ${key} --confirmed`);
       };
       p.stdout.on('data', (d) => {
         buf += d; let nl;
@@ -375,7 +384,7 @@ if (cmd === 'init') {
             else console.error(`${key}: ${ev.error}`);
             continue;
           }
-          if (ev.t === 'hello') { backoff = 1000; if (ev.peer_pub && !k.their_pub) joined(ev.peer_pub); }
+          if (ev.t === 'hello') { backoff = 1000; if (ev.peer_pub) joined(ev.peer_pub); }
           else if (ev.t === 'joined') joined(ev.peer_pub);
           else if (ev.t === 'lobby') {
             if (seenLobby.has(`${key}/${ev.conv}`) || !k.their_pub) continue;
