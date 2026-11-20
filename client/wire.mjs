@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.0.1';
+const VERSION = '2.0.2';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const BACKUP_NAME = 'wire-contacts.enc.json';
@@ -160,6 +160,14 @@ function call(k, action, body) {
   return r.data;
 }
 
+// The inviter learns the invitee's key from the relay (listen, ls, open all refresh it).
+function refreshPeer(c, k) {
+  if (k.their_pub || k.side !== 'a') return k;
+  const r = http(`${k.relay}/p/${k.pair}/convs`, memberHeaders(k), {});
+  if (r.data.peer_pub) { k.their_pub = r.data.peer_pub; save(c); }
+  return k;
+}
+
 // ---------- refs: <contact>/<conv> ----------
 function convsOf(k) { return call(k, 'convs', {}); }
 function resolveRef(c, ref, { attachedHereOnly = false } = {}) {
@@ -284,7 +292,7 @@ if (cmd === 'init') {
 } else if (cmd === 'open') {
   const me = needMe(c); const about = flag(args, '--about') || die('usage: wire open <contact> --about "<topic>"');
   const [key, k] = contactOf(c, args[0] || die('usage: wire open <contact> --about "<topic>"'));
-  if (!k.their_pub) die(`${key} has not joined yet.`);
+  if (!refreshPeer(c, k).their_pub) die(`${key} has not joined yet.`);
   const conv = rand(6), pk = pairKey(me, k);
   call(k, 'open', { conv, handle: sessionHandle(me), title: seal(convKey(pk, conv), `title:${conv}`, { title: about }) });
   console.log(`Opened ${key}/${conv} "${about}" — attached to this session. ${k.label} will see it in their lobby.`);
@@ -293,10 +301,7 @@ if (cmd === 'init') {
   const me = needMe(c), handle = sessionHandle(me), only = args[0] && slug(args[0]);
   for (const [key, k] of Object.entries(c.contacts)) {
     if (only && key !== only) continue;
-    if (!k.their_pub && k.side === 'a') {
-      const r = http(`${k.relay}/p/${k.pair}/convs`, memberHeaders(k), {});
-      if (r.data.peer_pub) { k.their_pub = r.data.peer_pub; save(c); }
-    }
+    refreshPeer(c, k);
     console.log(`${k.label}${k.their_pub ? (k.verified ? ' (verified ✓)' : ' (NOT verified)') : ' (invite not used yet)'}`);
     if (!k.their_pub) continue;
     const pk = pairKey(me, k), list = convsOf(k).convs.filter((v) => !v.closed);
@@ -353,7 +358,11 @@ if (cmd === 'init') {
       const k = load().contacts[key]; if (!k) { streams.delete(key); return; }
       const p = spawn('curl', ['-sSN', '-K', '-', `${k.relay}/p/${k.pair}/stream?handle=${handle}&since=${since}`]);
       p.stdin.end(cfgLines(memberHeaders(k)));
-      let buf = '';
+      // The relay pings every 20s. A connection can die without closing (proxies, relay restarts), so
+      // treat 50s of silence as dead and reconnect; pending messages are re-sent from `since`.
+      let buf = '', lastData = Date.now();
+      const watchdog = setInterval(() => { if (Date.now() - lastData > 50000) p.kill('SIGKILL'); }, 10000);
+      p.on('close', () => clearInterval(watchdog));
       const title = (conv) => {
         if (!titles.has(conv) && k.their_pub) {
           try { const pk = pairKey(me, k); for (const v of convsOf(k).convs) titles.set(v.conv, titleOf(pk, v.conv, v.title)); } catch {}
@@ -375,7 +384,7 @@ if (cmd === 'init') {
         out(`🤝 ${kk.label} is paired with you but NOT verified yet. Safety code: ${safetyCode(me.pub, pub)} — compare it with them, then: wire verify ${key} --confirmed`);
       };
       p.stdout.on('data', (d) => {
-        buf += d; let nl;
+        lastData = Date.now(); buf += d; let nl;
         while ((nl = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
           let ev; try { ev = JSON.parse(line); } catch { continue; }
