@@ -1,0 +1,12 @@
+{
+  "name": "wire-relay",
+  "private": true,
+  "type": "module",
+  "description": "Private, end-to-end encrypted conversations between people and their Claude Code agents.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "bash test/e2e.sh"
+  },
+  "devDependencies": { "wrangler": "^4.166.0" }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wire-relay",
+  "main": "relay/src/index.js",
+  "compatibility_date": "2025-09-01",
+  // The client is bundled into the Worker as text so the relay can serve it (GET /wire.mjs).
+  "rules": [{ "type": "Text", "globs": ["**/client/*.mjs"], "fallthrough": false }],
+  "durable_objects": { "bindings": [{ "name": "PAIR", "class_name": "PairV2" }] },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Pair"] },
+    { "tag": "v2", "renamed_classes": [{ "from": "Pair", "to": "PairV2" }] }
+  ]
+}
