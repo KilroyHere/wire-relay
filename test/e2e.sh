@@ -7,7 +7,13 @@ ROOT=$PWD PORT=${PORT:-8799} R="http://127.0.0.1:${PORT:-8799}"
 T=$(mktemp -d) PASS=0 FAIL=0
 export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}" no_proxy="127.0.0.1,localhost${no_proxy:+,$no_proxy}"
 
-cleanup() { pkill -P $$ 2>/dev/null; kill "$DEV" 2>/dev/null; pkill -f "wrangler dev --port $PORT" 2>/dev/null; pkill -f "$T/" 2>/dev/null; rm -rf "$T"; }
+# Listeners run detached and are told apart only by their WIRE_DIR, so find this run's by environment.
+cleanup() {
+  for p in $(pgrep -f "wire.mjs listen"); do
+    tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -q "^WIRE_DIR=$T/" && kill "$p" 2>/dev/null
+  done
+  pkill -P $ 2>/dev/null; kill "$DEV" 2>/dev/null; pkill -f "wrangler dev --port $PORT" 2>/dev/null; pkill -f "$T/" 2>/dev/null; rm -rf "$T"
+}
 trap cleanup EXIT
 
 npx wrangler dev --port "$PORT" --ip 127.0.0.1 --var OWNER_TOKEN:devtoken > "$T/dev.log" 2>&1 & DEV=$!
