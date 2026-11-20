@@ -20,6 +20,9 @@
 //   POST /p/<pair>/convs   {}
 //   POST /p/<pair>/close   {conv}
 //   POST /p/<pair>/revoke  {}
+//   vault (x-wire-vault-token; an encrypted copy of a person's identity + contacts, so new sessions can restore it):
+//   POST /vault/<id>/get   {}
+//   POST /vault/<id>/put   {data, if_version?}   creating one needs the owner token or a pairing's member headers
 import { DurableObject } from 'cloudflare:workers';
 import CLIENT from '../../client/wire.mjs'; // bundled as text (see "rules" in wrangler.jsonc)
 
@@ -39,6 +42,7 @@ const MAX_META = 8 * 1024;        // encrypted title / note
 const MAX_PENDING = 2000;         // per pairing
 const MAX_STREAMS = 8;            // per side
 const MAX_OPEN_CONVS = 200;       // per pairing
+const MAX_VAULT = 256 * 1024;     // one encrypted identity blob
 const ID = /^[A-Za-z0-9_-]{6,64}$/;
 const HEX64 = /^[a-f0-9]{64}$/;
 const PUB = /^[A-Za-z0-9_-]{43}$/;
@@ -73,29 +77,74 @@ export default {
       const stub = env.PAIR.get(env.PAIR.idFromName(b.pair));
       return stub.fetch(new Request('https://do/init', { method: 'POST', body: JSON.stringify(b) }));
     }
+    const vm = url.pathname.match(/^\/vault\/([A-Za-z0-9_-]{24,64})\/(get|put)$/);
+    if (vm && req.method === 'POST') return vault(req, env, vm[1], vm[2]);
     const m = url.pathname.match(/^\/p\/([A-Za-z0-9_-]{6,64})\/([a-z]+)$/);
     if (!m) return json({ error: 'not found' }, 404);
     return env.PAIR.get(env.PAIR.idFromName(m[1])).fetch(req);
   },
 };
 
+// A vault is addressed and authenticated by values derived from the owner's WIRE_SEED. Anyone holding the
+// token may read or replace it; creating a new one is limited to the relay owner and paired members, so the
+// relay cannot be used as free storage by strangers.
+async function vault(req, env, id, action) {
+  const b = (await readJson(req)) || {};
+  const token = req.headers.get('x-wire-vault-token') || '';
+  if (!token) return json({ error: 'unauthorized' }, 401);
+  const stub = env.VAULT.get(env.VAULT.idFromName(id));
+  const ask = (creator_ok) => stub.fetch(new Request(`https://do/${action}`, {
+    method: 'POST', body: JSON.stringify({ token, data: b.data, if_version: b.if_version, creator_ok }),
+  }));
+  const r = await ask(false);
+  if (r.status !== 428) return r;
+  let ok = false;
+  const owner = req.headers.get('x-wire-owner') || '';
+  if (owner && env.OWNER_TOKEN && (await safeEq(owner, env.OWNER_TOKEN))) ok = true;
+  const pair = req.headers.get('x-wire-pair') || '';
+  if (!ok && ID.test(pair)) {
+    const pr = await env.PAIR.get(env.PAIR.idFromName(pair)).fetch(new Request('https://do/convs', {
+      method: 'POST', body: '{}',
+      headers: { 'x-wire-side': req.headers.get('x-wire-side') || '', 'x-wire-token': req.headers.get('x-wire-token') || '' },
+    }));
+    ok = pr.status === 200;
+  }
+  return ok ? ask(true) : json({ error: 'only the relay owner or a paired member can create a vault here' }, 403);
+}
+
+export class Vault extends DurableObject {
+  async fetch(req) {
+    const action = new URL(req.url).pathname.slice(1), b = (await readJson(req)) || {};
+    const row = await this.ctx.storage.get('vault'); // reading a missing key stores nothing
+    if (row && row.tok !== (await sha(b.token || ''))) return json({ error: 'unauthorized' }, 401);
+    if (action === 'get') return row ? json({ v: row.v, data: row.data }) : json({ error: 'no vault' }, 404);
+    if (typeof b.data !== 'string' || !b.data || b.data.length > MAX_VAULT) return json({ error: 'bad data' }, 400);
+    if (!row && !b.creator_ok) return json({ error: 'create not allowed' }, 428);
+    if (row && b.if_version != null && Number(b.if_version) !== row.v) return json({ error: 'version', v: row.v }, 409);
+    const v = (row ? row.v : 0) + 1;
+    await this.ctx.storage.put('vault', { tok: row ? row.tok : await sha(b.token), v, data: b.data, updated: Date.now() });
+    return json({ v });
+  }
+}
+
 export class PairV2 extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.schema();
+    // Tables exist only for pairings the owner created; a request for an unknown pairing stores nothing.
+    this.ready = this.sql.exec(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'meta'`).one().n > 0;
     this.streams = new Map(); // `${side}:${handle}` -> { side, handle, write, close }
   }
 
-  // Called again after deleteAll() (revoke / expiry), which drops the tables but keeps this instance alive.
   schema() {
+    this.ready = true;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS conv (id TEXT PRIMARY KEY, title TEXT, opener TEXT, created INTEGER,
       last INTEGER, closed INTEGER DEFAULT 0, note TEXT, att_a TEXT, att_b TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS msg (id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT, sender TEXT, body TEXT, ts INTEGER)`);
   }
 
-  get(k) { const r = this.sql.exec(`SELECT v FROM meta WHERE k = ?`, k).toArray()[0]; return r ? r.v : null; }
+  get(k) { if (!this.ready) return null; const r = this.sql.exec(`SELECT v FROM meta WHERE k = ?`, k).toArray()[0]; return r ? r.v : null; }
   set(k, v) { this.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)`, k, String(v)); }
   conv(id) { return this.sql.exec(`SELECT * FROM conv WHERE id = ?`, id).toArray()[0]; }
   push(side, ev, handle) {
@@ -141,6 +190,7 @@ export class PairV2 extends DurableObject {
     if (this.get('created')) return json({ error: 'pairing exists' }, 409);
     if (!b || !HEX64.test(b.invite_hash || '') || !PUB.test(b.pub_a || '') || !HEX64.test(b.tok_a || ''))
       return json({ error: 'bad init' }, 400);
+    this.schema();
     const now = Date.now();
     this.set('created', now); this.set('invite_hash', b.invite_hash); this.set('pub_a', b.pub_a); this.set('tok_a', b.tok_a);
     await this.ensureAlarm(now + INVITE_TTL);
@@ -171,7 +221,12 @@ export class PairV2 extends DurableObject {
     };
     const ping = setInterval(() => s.write({ t: 'ping' }), 20000);
     this.streams.set(key, s);
-    s.write({ t: 'hello', peer_pub: this.get('pub_' + other) });
+    s.write({ t: 'hello', peer_pub: this.get('pub_' + other), client: CLIENT_VERSION });
+    s.write({
+      t: 'state',
+      convs: this.sql.exec(`SELECT id, closed, att_${side} AS att FROM conv`).toArray()
+        .map((c) => ({ conv: c.id, closed: !!c.closed, mine: c.att === handle })),
+    });
     for (const c of this.sql.exec(`SELECT id, title, opener, created FROM conv WHERE closed = 0 AND att_${side} IS NULL`))
       s.write({ t: 'lobby', conv: c.id, title: c.title, opener: c.opener, created: c.created });
     for (const r of this.sql.exec(`SELECT m.id, m.conv, m.body FROM msg m JOIN conv c ON c.id = m.conv
@@ -202,7 +257,7 @@ export class PairV2 extends DurableObject {
     if (prev !== b.handle)
       for (const r of this.sql.exec(`SELECT id, body FROM msg WHERE conv = ? AND sender = ? ORDER BY id`, c.id, other))
         this.push(side, { t: 'msg', id: r.id, conv: c.id, body: r.body }, b.handle);
-    return json({ ok: true, moved_from_other_session: !!(prev && prev !== b.handle), note: c.note });
+    return json({ ok: true, moved_from_other_session: !!(prev && prev !== b.handle), note: c.note, title: c.title });
   }
 
   async send(side, other, b) {
@@ -261,16 +316,17 @@ export class PairV2 extends DurableObject {
     this.push(other, { t: 'revoked' });
     for (const s of [...this.streams.values()]) s.close();
     await this.ctx.storage.deleteAlarm();
-    await this.ctx.storage.deleteAll();
-    this.schema();
+    await this.ctx.storage.deleteAll(); // drops the tables too
+    this.ready = false;
     return json({ ok: true });
   }
 
   async alarm() {
+    if (!this.ready) return;
     const now = Date.now();
     if (!this.get('claimed') && Number(this.get('created')) < now - INVITE_TTL) {
       await this.ctx.storage.deleteAll();
-      this.schema();
+      this.ready = false;
       return;
     }
     this.sql.exec(`DELETE FROM msg WHERE ts < ?`, now - MSG_TTL);

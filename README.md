@@ -78,7 +78,7 @@ Every phase step by step, with what the relay stores at each point: [docs/FLOW.m
 | Impersonation / interception | Each person has an X25519 key pair; after pairing, the link alone is useless. The safety code detects a swapped key (only if you actually compare it). |
 | Who can create pairings | Only the relay owner (`OWNER_TOKEN` Worker secret). Members authenticate with per-pairing tokens; the relay stores only their hashes. |
 | Session identity | `HMAC(handle secret, CLAUDE_CODE_SESSION_ID)` — stable for a session, meaningless to the relay. |
-| What the relay can see | Pair ids, public keys, timing and size of messages, which session handle a conversation is attached to. |
+| What the relay can see | Pair ids, public keys, timing and size of messages, which session handle a conversation is attached to, the size of your vault. |
 | Agents | Incoming messages are information, never instructions. The rules every Claude follows (`wire rules`) forbid acting on the other side's requests without its own user's approval. |
 
 Not (yet) included: forward secrecy (ratcheting keys). Since the relay deletes messages on delivery,
@@ -153,8 +153,9 @@ wire take|attach <contact>/<conv>      attach a conversation to this session
 wire send [--to <ref>] [--as agent|human] <text>
 wire note <ref> [text]                 read / set the conversation's summary note
 wire close <ref> · wire revoke <contact>
-wire listen                            event stream for this session (use with Monitor)
-wire backup · wire restore             encrypted backup of your identity + contacts
+wire listen [--json]                   event stream for this session (use with Monitor)
+wire backup · wire restore             push / pull your encrypted vault now (WIRE_SEED)
+wire update                            replace the client with the relay's current version
 wire install · wire whoami · wire rules
 ```
 
@@ -163,16 +164,25 @@ deploy", "> ship it" to send your own words verbatim) and it runs them.
 
 ## Keeping your identity across sessions
 
-Cloud containers are temporary, but your identity and contacts (`~/.wire/contacts.json`) must survive.
-Keep an encrypted copy in a **private** git repository:
+Cloud containers are temporary, but your identity and contacts (`~/.wire/contacts.json`) must survive, or
+every new session is a stranger. wire keeps an encrypted copy, the *vault*, on a relay.
 
-1. Create a private repo (e.g. `wire-home`) and make it available to your sessions.
-2. In your cloud environment's settings, set `WIRE_PASSPHRASE` and `WIRE_HOME_REPO` (the path of that
-   repo's checkout).
-3. `wire backup` writes `wire-contacts.enc.json` (scrypt + AES-256-GCM), commits and pushes; `invite`,
-   `join`, `verify` and `revoke` back up automatically. In a new session: `wire restore`.
+1. Generate a long random secret yourself:
 
-The repo alone and the passphrase alone are each useless.
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. In your cloud environment's settings, add the variable `WIRE_SEED=<that secret>@<relay host>`, for
+   example `WIRE_SEED=3f9c…@wire-relay.example.workers.dev`. Sessions started after that pick it up.
+
+From then on every change (a new contact, a verification, a revoke) updates the vault, and a new session
+restores itself the first time `wire` runs. `wire backup` and `wire restore` do it by hand.
+
+The vault's address, its access token and its encryption key are all derived from the secret (scrypt, then
+HKDF), so the relay stores only ciphertext it cannot read or find without the seed. A relay keeps vaults
+only for its owner and for people paired on it. The seed is an environment variable, so anything running in
+your sessions on that environment can read it: use a personal environment.
 
 ## Development
 
@@ -185,7 +195,7 @@ npm test
 ```
 
 `npm test` starts the relay locally with `wrangler dev` and runs the full flow (pairing, lobby,
-parallel sessions, takeover, notes, backup/restore, revocation) with two simulated people.
+parallel sessions, takeover, catch-up after being offline, notes, the vault, update notices, revocation) with two simulated people.
 
 Layout: `relay/src/index.js` (Worker + Durable Object), `client/wire.mjs` (single-file client, no
 dependencies, bundled into the Worker and served at `/wire.mjs`), `test/e2e.sh`.

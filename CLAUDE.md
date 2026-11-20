@@ -7,5 +7,7 @@
   proxy). It is bundled into the Worker as text and served at `/wire.mjs`; bump `VERSION` when it changes.
 - Everything stored on the relay is ciphertext or hashes. Never log request bodies or tokens in the Worker.
 - Durable Object schema changes need a new class + migration in `wrangler.jsonc`.
+- `Vault` Durable Object: one encrypted identity blob per `WIRE_SEED`; changes to identity or contacts in the
+  client go through `commit()` so the vault stays in sync.
 - Run `npm test` (starts `wrangler dev` and runs `test/e2e.sh`) after any change to relay or client.
 - Never commit `.dev.vars`, owner tokens, account ids, or anyone's `contacts.json` / backups.

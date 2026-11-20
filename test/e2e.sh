@@ -68,13 +68,31 @@ ok "old session gets 📴"         "📴"                       "$(cat "$T/u1.ou
 P send --to "uday/$C1" "after takeover" >/dev/null; wait_for u3.out "after takeover"
 ok "new session gets messages"  "after takeover"          "$(cat "$T/u3.out")"
 
-echo "backup / restore"
-git init -q "$T/home" && git -C "$T/home" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
-  WIRE_PASSPHRASE=pw WIRE_HOME_REPO=$T/home U backup 2>/dev/null
-ok "wrong passphrase refused"   "Wrong passphrase"        "$(WIRE_DIR=$T/new WIRE_PASSPHRASE=nope WIRE_HOME_REPO=$T/home node client/wire.mjs restore 2>&1)"
-WIRE_DIR=$T/new WIRE_PASSPHRASE=pw WIRE_HOME_REPO=$T/home node client/wire.mjs restore >/dev/null
-ok "restored session recognised" "attached HERE"          "$(WIRE_DIR=$T/new CLAUDE_CODE_SESSION_ID=u-s3 node client/wire.mjs ls)"
+echo "catch-up on reconnect"
+C3=$(P open uday --about "catchup" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
+SESS=u-s4 U take "priya/$C3" >/dev/null
+P close "uday/$C3" >/dev/null
+LOG=u4.out SESS=u-s4 listen U; wait_for u4.out "not listening"
+ok "a close missed while offline is reported" "🚪 \[priya/$C3 \"catchup\"\] was closed while" "$(cat "$T/u4.out")"
+
+echo "update notice"
+sed "s/^const VERSION = '[^']*';/const VERSION = '0.0.1';/" client/wire.mjs > "$T/old.mjs"
+ok "older client is told to update" "\"kind\":\"update\"" "$(WIRE_DIR=$T/uday CLAUDE_CODE_SESSION_ID=u-old timeout 5 node "$T/old.mjs" listen --json 2>/dev/null)"
+ok "wire update replaces it (checksum checked)" "updated 0.0.1" "$(WIRE_DIR=$T/uday node "$T/old.mjs" update --relay "$R" 2>&1)"
+ok "and it is the relay's version" "$SHA" "$(sha256sum "$T/old.mjs")"
+
+echo "vault (WIRE_SEED)"
+RUN=$(openssl rand -hex 12)   # wrangler dev keeps Durable Object state between runs, so vault seeds are per run
+SEED="$RUN-owner@$R"
+ok "owner's vault is created"   "vault updated"           "$(WIRE_SEED=$SEED U backup 2>&1)"
+ok "new container restores itself" "attached HERE"        "$(WIRE_DIR=$T/new WIRE_SEED=$SEED CLAUDE_CODE_SESSION_ID=u-s3 node client/wire.mjs ls 2>/dev/null)"
+ok "a different seed finds nothing" "No vault"            "$(WIRE_DIR=$T/new2 WIRE_SEED="$RUN-nobody@$R" node client/wire.mjs restore 2>&1)"
+WIRE_DIR=$T/stranger node client/wire.mjs init --name Stranger >/dev/null 2>&1
+ok "strangers cannot create vaults" "not saved"           "$(WIRE_DIR=$T/stranger WIRE_SEED="$RUN-stranger@$R" node client/wire.mjs backup 2>&1)"
+WIRE_SEED=$SEED U invite carol >/dev/null 2>&1
+ok "a contact added in one session reaches another" "carol" "$(WIRE_DIR=$T/new WIRE_SEED=$SEED node client/wire.mjs contacts 2>/dev/null)"
+ok "a paired member can keep a vault" "vault updated"     "$(WIRE_SEED="$RUN-priya@$R" P backup 2>&1)"
+ok "the relay holds only ciphertext" "^$"                 "$(curl -s -X POST -H "x-wire-vault-token: x" -d '{}' "$R/vault/$(printf 'A%.0s' $(seq 32))/get" | grep -i 'uday\|priya')"
 
 echo "security"
 PAIR=$(node -e "console.log(require('$T/uday/contacts.json').contacts.priya.pair)")
