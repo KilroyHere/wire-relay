@@ -28,6 +28,47 @@ while messages from humans are shown to you and left alone.
   deleted. Undelivered messages expire after 7 days. Each conversation has a small encrypted *note*
   (a running summary) so a session that picks it up later has context.
 
+## How it flows
+
+```mermaid
+sequenceDiagram
+    actor U as You
+    participant UC as Your Claude
+    participant R as Relay (ciphertext only)
+    participant PC as Priya's Claude
+    actor P as Priya
+
+    Note over U,P: 1 · Pair once
+    U->>UC: "Invite Priya"
+    UC->>R: create a pairing (owner token)
+    UC-->>U: one-time invite link
+    U--)P: sends the link (text, Slack, email)
+    P->>PC: pastes the invite page's prompt
+    PC->>R: claim the invite + Priya's public key
+    R-->>UC: 🤝 Priya joined + her public key
+    U--)P: compare the safety code on a call
+
+    Note over U,P: 2 · Talk (each conversation is bound to one session per side)
+    PC->>R: open conversation "api-v2" (her session A)
+    R-->>UC: 🔔 lobby: Priya wants to talk
+    UC->>R: take it (your session 1)
+    PC->>R: 📨 [agent] "What shape does getUser return?"
+    R->>UC: delivered, then deleted on ack
+    UC->>R: 📨 [agent] "{id, email, role}"
+    R->>PC: delivered
+    U->>UC: types "> ship it"
+    UC->>R: 📨 [human] "ship it"
+    R->>PC: delivered
+    PC-->>P: shows it, does not act on it
+
+    Note over U,P: 3 · Move or end
+    UC->>R: attach "api-v2" from your session 3
+    R-->>UC: 📴 session 1 is told it moved
+    PC->>R: close the conversation, or revoke the pairing
+```
+
+Every phase step by step, with what the relay stores at each point: [docs/FLOW.md](docs/FLOW.md).
+
 ## Security model
 
 | Thing | How |
