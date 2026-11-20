@@ -144,10 +144,26 @@ export const register: Register = on => {
   on('command.run', { command: 'wire' }, async $ => {
     const { client, env } = await wire($)
     const listed = await $.process.run(['node', client, 'ls'], { env })
-    await $.ui.open({ id: PANE, title: 'wire' })
+    const opened = await $.ui.open({ id: PANE, title: 'wire' })
     const text = (listed.stdout || listed.stderr).trim()
+    const parts = [text === '' ? 'No wire contacts yet.' : text]
 
-    return { text: text === '' ? 'No wire contacts yet.' : text }
+    if (!opened.isPlaced) {
+      // Not every app shows panes: the conversation is then printed here instead.
+      const list = await read($, feed)
+      const to = await read($, focus)
+      parts.push(
+        '',
+        to === null
+          ? 'No conversation in focus yet.'
+          : `In focus: ${to}. Start a line with > to send your own words.`,
+        ...(list.length === 0 ? ['No wire events yet.'] : list.slice(-20).map(entry => entry.line)),
+        '',
+        `(This app is not showing the wire pane: ${opened.reason})`,
+      )
+    }
+
+    return { text: parts.join('\n') }
   })
 
   on('prompt.submit', async ($, e, next) => {

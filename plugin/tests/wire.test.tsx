@@ -106,3 +106,21 @@ test('a message from the other Claude starts a turn; one from the person only wa
 
   expect(prompts[1]?.context?.join('\n')).toContain('lunch at 1')
 })
+
+test('/wire prints the conversation where the app shows no pane', async ($, on) => {
+  on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
+  on('process.run', () => ({ value: ran(0, 'alt (verified ✓)') }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'no surface places panes' } }))
+  on('command.run', () => ({}))
+
+  const out = await $.command.run({
+    command: 'wire',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 100 },
+  })
+
+  expect(out.text).toContain('alt (verified ✓)')
+  expect(out.text).toContain('No wire events yet.')
+  expect(out.text).toContain('no surface places panes')
+})
