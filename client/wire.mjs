@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.0.3';
+const VERSION = '2.0.4';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const BACKUP_NAME = 'wire-contacts.enc.json';
@@ -347,7 +347,8 @@ if (cmd === 'init') {
 
 } else if (cmd === 'revoke') {
   const [key, k] = contactOf(c, args[0] || die('usage: wire revoke <contact>'));
-  if (k.their_pub || k.side === 'a') call(k, 'revoke', {});
+  const r = http(`${k.relay}/p/${k.pair}/revoke`, memberHeaders(k), {});
+  if (r.status >= 400 && r.data.error !== 'no such pairing') die(`relay: ${r.data.error || 'HTTP ' + r.status}`);
   delete c.contacts[key]; save(c); console.log(`revoked ${key}: pairing deleted on the relay and locally`); backup({ quiet: true });
 
 } else if (cmd === 'listen') {
@@ -388,14 +389,17 @@ if (cmd === 'init') {
         announced.add(key);
         out(`🤝 ${kk.label} is paired with you but NOT verified yet. Safety code: ${safetyCode(me.pub, pub)} — compare it with them, then: wire verify ${key} --confirmed`);
       };
-      p.stdout.on('data', (d) => {
+      const feed = (d) => {
         lastData = Date.now(); buf += d; let nl;
         while ((nl = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
           let ev; try { ev = JSON.parse(line); } catch { continue; }
           if (ev.error) {
-            if (/no such pairing|unauthorized/.test(ev.error)) { out(`⛔ ${key}: ${ev.error} — this contact no longer works`); stopped = true; }
-            else console.error(`${key}: ${ev.error}`);
+            if (/no such pairing|unauthorized/.test(ev.error)) {
+              // The pairing was revoked or expired while we were not listening: report it once and drop it.
+              out(`⛔ ${k.label}: the pairing no longer exists on the relay (revoked or expired); contact removed`);
+              stopped = true; const f = load(); delete f.contacts[key]; save(f);
+            } else console.error(`${key}: ${ev.error}`);
             continue;
           }
           if (ev.t === 'hello') { backoff = 1000; if (ev.peer_pub) joined(ev.peer_pub); }
@@ -417,8 +421,11 @@ if (cmd === 'init') {
           else if (ev.t === 'closed') out(`🚪 [${key}/${ev.conv} "${title(ev.conv)}"] closed by ${k.label}`);
           else if (ev.t === 'revoked') { out(`⛔ ${k.label} ended the pairing; contact removed`); stopped = true; const f = load(); delete f.contacts[key]; save(f); }
         }
-      });
+      };
+      p.stdout.on('data', feed);
       p.stderr.on('data', (d) => process.stderr.write(d));
+      // Error replies are a single JSON object without a trailing newline: flush what is left.
+      p.on('close', () => { if (buf.trim()) feed('\n'); });
       p.on('close', () => { if (!stopped) { setTimeout(run, backoff); backoff = Math.min(backoff * 2, 30000); } else streams.delete(key); });
     };
     streams.set(key, true); run();

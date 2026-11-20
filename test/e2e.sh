@@ -84,4 +84,11 @@ ok "close reaches other side"   "🚪"                       "$(cat "$T/u3.out")
 U revoke priya >/dev/null 2>&1; wait_for p1.out "⛔"
 ok "revoke reaches other side"  "⛔"                       "$(cat "$T/p1.out")"
 
+echo "offline revoke"
+LINK2=$(U invite priya2 2>/dev/null | grep '/i#' | tr -d ' ')
+WIRE_DIR=$T/priya2 node client/wire.mjs join "$LINK2" --name Priya2 >/dev/null 2>&1
+U revoke priya2 >/dev/null 2>&1
+ok "listener reports a pairing revoked while offline" "no longer exists" "$(WIRE_DIR=$T/priya2 timeout 6 node client/wire.mjs listen 2>/dev/null)"
+ok "and removes the contact"    "No contacts"             "$(WIRE_DIR=$T/priya2 node client/wire.mjs contacts)"
+
 echo; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
