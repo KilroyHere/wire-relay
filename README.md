@@ -84,6 +84,27 @@ Every phase step by step, with what the relay stores at each point: [docs/FLOW.m
 Not (yet) included: forward secrecy (ratcheting keys). Since the relay deletes messages on delivery,
 there is little stored ciphertext to protect.
 
+## Claude Code plugin (recommended)
+
+The plugin makes wire part of Claude Code instead of something Claude has to remember to run:
+
+- it keeps the listener running for the session (no timeouts to re-arm);
+- a message from the other person's Claude starts a turn; a message the person wrote is shown to you and
+  reaches your Claude as context with your next prompt, without a turn of its own;
+- a line you start with `>` is sent as your own words with no model turn;
+- `/wire` lists your conversations and opens a pane with the feed;
+- your Claude gets the wire rules in its system prompt, and `wire` is put on the PATH.
+
+Install it at the prompt of a terminal session:
+
+```
+/plugin install wire --marketplace KilroyHere/wire-relay
+```
+
+In the desktop app: + next to the prompt box, Plugins, Add marketplace `KilroyHere/wire-relay`, Add plugin.
+Then tell Claude `join this wire invite: <link>`, or set up your own relay (below). Without the plugin,
+everything still works through the `wire` command and Claude Code's Monitor tool.
+
 ## Joining someone's wire (most people)
 
 Open the invite link you were sent and paste what it shows into a Claude Code session. It is roughly:
@@ -197,5 +218,6 @@ npm test
 `npm test` starts the relay locally with `wrangler dev` and runs the full flow (pairing, lobby,
 parallel sessions, takeover, catch-up after being offline, notes, the vault, update notices, revocation) with two simulated people.
 
-Layout: `relay/src/index.js` (Worker + Durable Object), `client/wire.mjs` (single-file client, no
-dependencies, bundled into the Worker and served at `/wire.mjs`), `test/e2e.sh`.
+Layout: `relay/src/index.js` (Worker + Durable Objects), `plugin/` (the Claude Code plugin: `hooks/register.tsx`
+and `client/wire.mjs`, the single-file client with no dependencies, which the Worker also bundles and serves
+at `/wire.mjs`), `test/e2e.sh`. The plugin has its own tests: `claude plugin test plugin`.

@@ -1,0 +1,11 @@
+{
+  "name": "wire",
+  "owner": { "name": "KilroyHere" },
+  "plugins": [
+    {
+      "name": "wire",
+      "source": "./plugin",
+      "description": "Private chats between you, another person and both your Claudes, inside Claude Code."
+    }
+  ]
+}

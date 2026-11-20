@@ -24,7 +24,7 @@
 //   POST /vault/<id>/get   {}
 //   POST /vault/<id>/put   {data, if_version?}   creating one needs the owner token or a pairing's member headers
 import { DurableObject } from 'cloudflare:workers';
-import CLIENT from '../../client/wire.mjs'; // bundled as text (see "rules" in wrangler.jsonc)
+import CLIENT from '../../plugin/client/wire.mjs'; // bundled as text (see "rules" in wrangler.jsonc)
 
 const CLIENT_VERSION = CLIENT.match(/const VERSION = '([^']+)'/)[1];
 let clientSha;

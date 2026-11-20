@@ -1,0 +1,10 @@
+{
+  "name": "wire",
+  "version": "0.1.0",
+  "description": "Private chats between you, another person and both your Claudes: incoming messages appear in the session, '> text' sends your own words, /wire shows the conversation.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "KilroyHere"
+  },
+  "repository": "https://github.com/KilroyHere/wire-relay"
+}

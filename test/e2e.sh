@@ -13,8 +13,8 @@ trap cleanup EXIT
 npx wrangler dev --port "$PORT" --ip 127.0.0.1 --var OWNER_TOKEN:devtoken > "$T/dev.log" 2>&1 & DEV=$!
 for _ in $(seq 1 60); do curl -s -m 2 "$R/" 2>/dev/null | grep -q 'wire relay' && break; sleep 1; done
 
-U() { WIRE_DIR=$T/uday  CLAUDE_CODE_SESSION_ID=${SESS:-u-s1} node "$ROOT/client/wire.mjs" "$@"; }
-P() { WIRE_DIR=$T/priya CLAUDE_CODE_SESSION_ID=${SESS:-p-s1} node "$ROOT/client/wire.mjs" "$@"; }
+U() { WIRE_DIR=$T/uday  CLAUDE_CODE_SESSION_ID=${SESS:-u-s1} node "$ROOT/plugin/client/wire.mjs" "$@"; }
+P() { WIRE_DIR=$T/priya CLAUDE_CODE_SESSION_ID=${SESS:-p-s1} node "$ROOT/plugin/client/wire.mjs" "$@"; }
 ok() { if grep -qE -- "$2" <<<"$3"; then PASS=$((PASS+1)); echo "  ✓ $1"; else FAIL=$((FAIL+1)); echo "  ✗ $1"; echo "    expected /$2/ in: $3"; fi; }
 listen() { ( "$@" listen > "$T/$LOG" 2>/dev/null & ); }
 wait_for() { for _ in $(seq 1 30); do grep -qE -- "$2" "$T/$1" 2>/dev/null && return; sleep 0.3; done; }
@@ -37,7 +37,7 @@ LINK=$(U invite Priya 2>/dev/null | grep '/i#' | tr -d ' ')
 LOG=u1.out listen U
 JOIN=$(P join "$LINK" --name Priya 2>/dev/null)
 ok "invitee joins"              "Safety code"             "$JOIN"
-ok "invite is single-use"       "already used"            "$(WIRE_DIR=$T/mallory node client/wire.mjs join "$LINK" --name Mallory 2>&1)"
+ok "invite is single-use"       "already used"            "$(WIRE_DIR=$T/mallory node plugin/client/wire.mjs join "$LINK" --name Mallory 2>&1)"
 wait_for u1.out joined
 CODE_P=$(grep -o 'Safety code: [^.]*' <<<"$JOIN" | head -1 | cut -d' ' -f3-7)
 ok "inviter sees join + same code" "$CODE_P"              "$(cat "$T/u1.out")"
@@ -76,7 +76,7 @@ LOG=u4.out SESS=u-s4 listen U; wait_for u4.out "not listening"
 ok "a close missed while offline is reported" "🚪 \[priya/$C3 \"catchup\"\] was closed while" "$(cat "$T/u4.out")"
 
 echo "update notice"
-sed "s/^const VERSION = '[^']*';/const VERSION = '0.0.1';/" client/wire.mjs > "$T/old.mjs"
+sed "s/^const VERSION = '[^']*';/const VERSION = '0.0.1';/" plugin/client/wire.mjs > "$T/old.mjs"
 ok "older client is told to update" "\"kind\":\"update\"" "$(WIRE_DIR=$T/uday CLAUDE_CODE_SESSION_ID=u-old timeout 5 node "$T/old.mjs" listen --json 2>/dev/null)"
 ok "wire update replaces it (checksum checked)" "updated 0.0.1" "$(WIRE_DIR=$T/uday node "$T/old.mjs" update --relay "$R" 2>&1)"
 ok "and it is the relay's version" "$SHA" "$(sha256sum "$T/old.mjs")"
@@ -85,12 +85,12 @@ echo "vault (WIRE_SEED)"
 RUN=$(openssl rand -hex 12)   # wrangler dev keeps Durable Object state between runs, so vault seeds are per run
 SEED="$RUN-owner@$R"
 ok "owner's vault is created"   "vault updated"           "$(WIRE_SEED=$SEED U backup 2>&1)"
-ok "new container restores itself" "attached HERE"        "$(WIRE_DIR=$T/new WIRE_SEED=$SEED CLAUDE_CODE_SESSION_ID=u-s3 node client/wire.mjs ls 2>/dev/null)"
-ok "a different seed finds nothing" "No vault"            "$(WIRE_DIR=$T/new2 WIRE_SEED="$RUN-nobody@$R" node client/wire.mjs restore 2>&1)"
-WIRE_DIR=$T/stranger node client/wire.mjs init --name Stranger >/dev/null 2>&1
-ok "strangers cannot create vaults" "not saved"           "$(WIRE_DIR=$T/stranger WIRE_SEED="$RUN-stranger@$R" node client/wire.mjs backup 2>&1)"
+ok "new container restores itself" "attached HERE"        "$(WIRE_DIR=$T/new WIRE_SEED=$SEED CLAUDE_CODE_SESSION_ID=u-s3 node plugin/client/wire.mjs ls 2>/dev/null)"
+ok "a different seed finds nothing" "No vault"            "$(WIRE_DIR=$T/new2 WIRE_SEED="$RUN-nobody@$R" node plugin/client/wire.mjs restore 2>&1)"
+WIRE_DIR=$T/stranger node plugin/client/wire.mjs init --name Stranger >/dev/null 2>&1
+ok "strangers cannot create vaults" "not saved"           "$(WIRE_DIR=$T/stranger WIRE_SEED="$RUN-stranger@$R" node plugin/client/wire.mjs backup 2>&1)"
 WIRE_SEED=$SEED U invite carol >/dev/null 2>&1
-ok "a contact added in one session reaches another" "carol" "$(WIRE_DIR=$T/new WIRE_SEED=$SEED node client/wire.mjs contacts 2>/dev/null)"
+ok "a contact added in one session reaches another" "carol" "$(WIRE_DIR=$T/new WIRE_SEED=$SEED node plugin/client/wire.mjs contacts 2>/dev/null)"
 ok "a paired member can keep a vault" "vault updated"     "$(WIRE_SEED="$RUN-priya@$R" P backup 2>&1)"
 ok "the relay holds only ciphertext" "^$"                 "$(curl -s -X POST -H "x-wire-vault-token: x" -d '{}' "$R/vault/$(printf 'A%.0s' $(seq 32))/get" | grep -i 'uday\|priya')"
 
@@ -104,9 +104,9 @@ ok "revoke reaches other side"  "⛔"                       "$(cat "$T/p1.out")"
 
 echo "offline revoke"
 LINK2=$(U invite priya2 2>/dev/null | grep '/i#' | tr -d ' ')
-WIRE_DIR=$T/priya2 node client/wire.mjs join "$LINK2" --name Priya2 >/dev/null 2>&1
+WIRE_DIR=$T/priya2 node plugin/client/wire.mjs join "$LINK2" --name Priya2 >/dev/null 2>&1
 U revoke priya2 >/dev/null 2>&1
-ok "listener reports a pairing revoked while offline" "no longer exists" "$(WIRE_DIR=$T/priya2 timeout 6 node client/wire.mjs listen 2>/dev/null)"
-ok "and removes the contact"    "No contacts"             "$(WIRE_DIR=$T/priya2 node client/wire.mjs contacts)"
+ok "listener reports a pairing revoked while offline" "no longer exists" "$(WIRE_DIR=$T/priya2 timeout 6 node plugin/client/wire.mjs listen 2>/dev/null)"
+ok "and removes the contact"    "No contacts"             "$(WIRE_DIR=$T/priya2 node plugin/client/wire.mjs contacts)"
 
 echo; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

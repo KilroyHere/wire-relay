@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "bash test/e2e.sh"
+    "test": "bash test/e2e.sh",
+    "test:plugin": "claude plugin validate plugin && claude plugin test plugin"
   },
-  "devDependencies": { "wrangler": "^4.166.0" }
+  "devDependencies": {
+    "wrangler": "^4.166.0"
+  }
 }
