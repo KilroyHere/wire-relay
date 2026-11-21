@@ -137,7 +137,7 @@ ok "revoke reaches other side"  "⛔"                       "$(cat "$T/p1.out")"
 
 echo "default conversation with two sessions open"
 LINK3=$(U invite lee 2>/dev/null | grep '/i#' | tr -d ' ')
-WIRE_DIR=$T/lee node plugin/client/wire.mjs join "$LINK3" --name Lee >/dev/null 2>&1
+WIRE_DIR=$T/lee node plugin/client/wire.mjs join "$LINK3" --name "Lee Ann" >/dev/null 2>&1
 L() { WIRE_DIR=$T/lee CLAUDE_CODE_SESSION_ID=$SESS node "$ROOT/plugin/client/wire.mjs" "$@"; }
 LOG=l1.out SESS=l-s1 listen L; LOG=l2.out SESS=l-s2 listen L; sleep 1.5
 U send --to lee "which session gets this?" >/dev/null; wait_for l1.out "🔔"; wait_for l2.out "🔔"
@@ -145,6 +145,11 @@ ok "both sessions get a lobby notice" "🔔.*General" "$(cat "$T/l1.out")"
 SESS=l-s2 L take uday >/dev/null; wait_for l2.out "which session gets this"; wait_for l1.out "taken in another"
 ok "the one that takes it gets the message" "which session gets this" "$(cat "$T/l2.out")"
 ok "the other drops its notice" "taken in another of your sessions" "$(cat "$T/l1.out")"
+SESS=l-s2 L send --to uday "hello from lee" >/dev/null; sleep 1; SESS=u-s1 U take lee >/dev/null 2>&1; wait_for u1.out "hello from lee"
+ok "a self-chosen name that differs is shown" "lee \(calls themselves Lee Ann\)" "$(cat "$T/u1.out")"
+
+echo "version"
+ok "wire version shows the checksum" "$(sha256sum plugin/client/wire.mjs | cut -d' ' -f1)" "$(node plugin/client/wire.mjs version)"
 
 echo "offline revoke"
 LINK2=$(U invite priya2 2>/dev/null | grep '/i#' | tr -d ' ')

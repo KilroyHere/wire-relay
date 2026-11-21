@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const DEFAULT = 'general'; // every pairing's default conversation, called "General" (see the relay)
@@ -84,6 +84,7 @@ const HELP = `wire ${VERSION}
   wire backup | wire restore [--force]   push / pull your encrypted vault now (WIRE_SEED=<secret>@<relay host>)
   wire update [--relay <url>]            replace this client with the relay's current version (checksum checked)
   wire install                           put wire on the PATH
+  wire version                           this client's version, checksum, and the plugin and commit it came from
   wire whoami | wire rules`;
 
 // ---------- utils ----------
@@ -335,6 +336,23 @@ function logEvent(handle, entry) {
 }
 const readLog = (handle, n) => { try { return fs.readFileSync(logFile(handle), 'utf8').trimEnd().split('\n').slice(-n).map((l) => JSON.parse(l)); } catch { return []; } };
 
+// ---------- version: what is installed, and where it came from ----------
+function versionInfo() {
+  const sha = shaHex(fs.readFileSync(SELF));
+  const root = path.dirname(path.dirname(SELF));
+  let plugin = null, commit = null, origin = null;
+  try { plugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8')); } catch {}
+  const git = (...a) => { try { return execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } };
+  if (plugin) { commit = git('rev-parse', 'HEAD'); origin = git('config', '--get', 'remote.origin.url'); }
+  return { version: VERSION, sha256: sha, file: SELF, plugin: plugin && { name: plugin.name, version: plugin.version, repository: plugin.repository || null, folder: root }, commit, origin };
+}
+function versionText() {
+  const v = versionInfo();
+  return [`wire ${v.version}`, `  client file  ${v.file}`, `  sha256       ${v.sha256}`,
+    ...(v.plugin ? [`  plugin       ${v.plugin.name} ${v.plugin.version}${v.plugin.repository ? ` (says it is from ${v.plugin.repository})` : ''}`,
+      `  installed    ${v.commit ? `commit ${v.commit}` : 'not a git checkout (no commit to show)'}${v.origin ? ` from ${v.origin}` : ''}`] : ['  plugin       (running outside the plugin)'])].join('\n');
+}
+
 // ---------- install: make `wire` callable ----------
 function install({ quiet = false } = {}) {
   const self = SELF;
@@ -389,6 +407,9 @@ if (cmd === 'init') {
   console.log(`Invite for ${label} (works once, expires in 7 days):\n\n  ${c.owner.relay}/i#${pair}.${invite}.${me.pub}.${encodeURIComponent(me.name)}\n`);
   console.log(`Send it to ${label} privately. When they join, you'll both see a safety code to compare.`);
   seedTip();
+
+} else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
+  console.log(bool(args, '--json') ? JSON.stringify(versionInfo()) : versionText());
 
 } else if (cmd === 'install') {
   install();
@@ -630,7 +651,8 @@ if (cmd === 'init') {
             const human = m.as === 'human', relayed = human && m.via === 'claude';
             const f = { contact: key, conv: ev.conv, ref: `${key}/${ev.conv}`, title: title(ev.conv), from: human ? 'human' : 'agent',
               name: k.label, self: m.name, ...(m.via ? { via: m.via } : {}), text: m.text };
-            const who = human ? `${k.label} [human${relayed ? ', relayed by their Claude' : ''}]` : `Claude (${k.label}) [agent]`;
+            const calls = m.name && m.name.toLowerCase() !== String(k.label).toLowerCase() ? ` (calls themselves ${m.name})` : '';
+            const who = human ? `${k.label}${calls} [human${relayed ? ', relayed by their Claude' : ''}]` : `Claude (${k.label}${calls}) [agent]`;
             out(`📨 [${f.ref} "${f.title}"] ${who}: ${m.text}`, 'msg', f);
           } else if (ev.t === 'taken') {
             if (seenLobby.has(`${key}/${ev.conv}`)) {
@@ -704,9 +726,11 @@ if (cmd === 'init') {
 
 } else if (cmd === 'whoami') {
   const me = needMe(c);
+  console.log(versionText().split('\n')[0] + ` · sha256 ${versionInfo().sha256.slice(0, 16)}…`);
   console.log(`${me.name} · key ${shaHex(me.pub).slice(0, 12)} · session ${sessionHandle(me).slice(0, 6)}… · ${c.owner ? `relay owner of ${c.owner.relay}` : 'not a relay owner'} · ${Object.keys(c.contacts).length} contact(s) · vault ${process.env.WIRE_SEED ? (vstate().dirty ? 'has unsaved changes' : 'in sync') : 'off (no WIRE_SEED)'}`);
 
 } else if (cmd === 'rules') {
+  // (version is shown by: wire version)
   console.log(RULES);
 
 } else {
