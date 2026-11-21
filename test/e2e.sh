@@ -74,6 +74,12 @@ ok "old session gets 📴"         "📴"                       "$(cat "$T/u1.ou
 P send --to "uday/$C1" "after takeover" >/dev/null; wait_for u3.out "after takeover"
 ok "new session gets messages"  "after takeover"          "$(cat "$T/u3.out")"
 
+echo "session log"
+LOGGED=$(SESS=u-s3 U log)
+ok "log keeps what arrived"     "Claude \(Priya\) \[agent\]: after takeover" "$LOGGED"
+ok "and what this session did"  "attached to this session" "$LOGGED"
+ok "sent messages are logged"   "you: ship it"            "$(U log)"
+
 echo "catch-up on reconnect"
 C3=$(P open uday --about "catchup" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
 SESS=u-s4 U take "priya/$C3" >/dev/null

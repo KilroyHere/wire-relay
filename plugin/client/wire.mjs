@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.1.0';
+const VERSION = '2.1.1';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const SELF = (() => { try { return fs.realpathSync(process.argv[1]); } catch { return process.argv[1]; } })();
@@ -68,6 +68,7 @@ const HELP = `wire ${VERSION}
   wire note <ref> [text]                 read or set the conversation's summary note
   wire close <ref> | wire revoke <contact>
   wire listen [--json]                   event stream for this session (use with Monitor)
+  wire log [-n <count>] [--json]         what this session saw and sent, most recent last
   wire backup | wire restore [--force]   push / pull your encrypted vault now (WIRE_SEED=<secret>@<relay host>)
   wire update [--relay <url>]            replace this client with the relay's current version (checksum checked)
   wire install                           put wire on the PATH
@@ -293,6 +294,20 @@ function remember(handle, key, conv, title) { // title === null forgets
   fs.writeFileSync(sessFile(handle), JSON.stringify(m));
 }
 
+// ---------- per-session log: what this session saw and sent ----------
+// Messages are deleted from the relay once delivered, so this local file is what lets a view of the
+// conversation (the plugin's pane, `wire log`) come back after a restart. Plain text, readable only by you.
+const logFile = (handle) => path.join(DIR, 'sessions', `${handle}.log`);
+function logEvent(handle, entry) {
+  try {
+    const f = logFile(handle);
+    fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 });
+    fs.appendFileSync(f, JSON.stringify({ at: Date.now(), ...entry, line: String(entry.line).slice(0, 4000) }) + '\n', { mode: 0o600 });
+    if (fs.statSync(f).size > 512 * 1024) fs.writeFileSync(f, fs.readFileSync(f, 'utf8').trimEnd().split('\n').slice(-300).join('\n') + '\n');
+  } catch {}
+}
+const readLog = (handle, n) => { try { return fs.readFileSync(logFile(handle), 'utf8').trimEnd().split('\n').slice(-n).map((l) => JSON.parse(l)); } catch { return []; } };
+
 // ---------- install: make `wire` callable ----------
 function install({ quiet = false } = {}) {
   const self = SELF;
@@ -392,6 +407,7 @@ if (cmd === 'init') {
   const conv = rand(6), pk = pairKey(me, k);
   call(k, 'open', { conv, handle: sessionHandle(me), title: seal(convKey(pk, conv), `title:${conv}`, { title: about }) });
   remember(sessionHandle(me), key, conv, about);
+  logEvent(sessionHandle(me), { kind: 'local', ref: `${key}/${conv}`, line: `↗ [${key}/${conv} "${about}"] you opened this conversation` });
   console.log(`Opened ${key}/${conv} "${about}" — attached to this session. ${k.label} will see it in their lobby.`);
 
 } else if (cmd === 'ls') {
@@ -417,7 +433,9 @@ if (cmd === 'init') {
 } else if (cmd === 'take' || cmd === 'attach') {
   const me = needMe(c); const { key, k, conv } = resolveRef(c, args[0] || die(`usage: wire ${cmd} <contact>/<conv>`));
   const r = call(k, 'attach', { conv, handle: sessionHandle(me) });
-  remember(sessionHandle(me), key, conv, r.title ? titleOf(pairKey(me, k), conv, r.title) : '?');
+  const attachedTitle = r.title ? titleOf(pairKey(me, k), conv, r.title) : '?';
+  remember(sessionHandle(me), key, conv, attachedTitle);
+  logEvent(sessionHandle(me), { kind: 'local', ref: `${key}/${conv}`, line: `↘ [${key}/${conv} "${attachedTitle}"] attached to this session` });
   console.log(`Attached ${key}/${conv} to this session.${r.moved_from_other_session ? ' (Your other session was told it moved.)' : ''}`);
   if (r.note) console.log(`Note: ${tryOpen(convKey(pairKey(me, k), conv), `note:${conv}`, r.note, { note: '(unreadable)' }).note}`);
   console.log('Waiting messages (if any) arrive through wire listen.');
@@ -433,6 +451,7 @@ if (cmd === 'init') {
     const body = seal(ck, `msg:${conv}`, { name: me.name, as, text: parts.length > 1 ? `(${i + 1}/${parts.length}) ${p}` : p, ts: Date.now() });
     delivered = call(k, 'send', { conv, body }).delivered_to_session;
   });
+  logEvent(sessionHandle(me), { kind: 'sent', ref: `${key}/${conv}`, line: `↗ [${key}/${conv}] ${as === 'human' ? 'you' : 'your Claude'}: ${text}` });
   console.log(`sent to ${key}/${conv} as ${as === 'human' ? me.name : `Claude (${me.name})`}${delivered ? '' : ' — they are not listening right now; it will wait (7 days)'}`);
 
 } else if (cmd === 'note') {
@@ -460,6 +479,7 @@ if (cmd === 'init') {
   const asJson = bool(args, '--json'); let toldUpdate = false;
   const out = (s, kind = 'info', fields = {}) => {
     const line = s.replace(/\n+$/, '');
+    if (kind !== 'update') logEvent(handle, { kind, line, ...(fields.ref ? { ref: fields.ref } : {}) });
     process.stdout.write((asJson ? JSON.stringify({ kind, line, ...fields }) : line) + '\n');
   };
   const start = (key) => {
@@ -561,6 +581,12 @@ if (cmd === 'init') {
   sync(); setInterval(sync, 5000);
   if (vaultCfg()) setInterval(() => soft(() => vaultPull()), 120000); // contacts added in other sessions
   console.error(`listening as ${me.name} (session ${handle.slice(0, 6)}…)`);
+
+} else if (cmd === 'log') {
+  const n = Number(flag(args, '-n', '50')) || 50, entries = readLog(sessionHandle(needMe(c)), n);
+  if (bool(args, '--json')) for (const e of entries) console.log(JSON.stringify(e));
+  else if (!entries.length) console.log('Nothing yet in this session.');
+  else for (const e of entries) console.log(e.line);
 
 } else if (cmd === 'backup') {
   const vc = vaultCfg() || die('Set WIRE_SEED=<secret>@<relay host> first.');

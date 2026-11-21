@@ -21,6 +21,7 @@ test('a line starting with > is sent as the person and starts no model turn', as
     return { value: SENT }
   })
   on('clock.now', () => ({ value: 1 }))
+  on('ui.log', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => {
     entered += 1
 
@@ -29,10 +30,12 @@ test('a line starting with > is sent as the person and starts no model turn', as
 
   await $.prompt.submit({ text: '> ship it', origin: { kind: 'composer' }, wait: false })
 
+  const sends = runs.filter(one => one.includes('"send"'))
+
   expect(entered).toBe(0)
-  expect(runs.length).toBe(1)
-  expect(runs[0]).toContain('"--as","human"')
-  expect(runs[0]).toContain('ship it')
+  expect(sends.length).toBe(1)
+  expect(sends[0]).toContain('"--as","human"')
+  expect(sends[0]).toContain('ship it')
 })
 
 test('an ordinary prompt goes to the model untouched', async ($, on) => {

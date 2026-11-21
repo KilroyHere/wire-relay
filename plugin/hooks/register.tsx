@@ -48,10 +48,38 @@ async function wire($: EngineInterface): Promise<Wire> {
   return { client: `${env.CLAUDE_PLUGIN_ROOT}/client/wire.mjs`, env }
 }
 
-async function note($: EngineInterface, line: string): Promise<void> {
-  const at = await $.clock.now()
-  const entry: FeedLine = { at, line }
-  await update($, feed, list => [...list, entry].slice(-200))
+// The pane shows the client's per-session log (`wire log`): what this session saw and sent. It lives on
+// disk, so the pane fills again after a restart or a reload, and the conversation last touched takes focus.
+async function refresh($: EngineInterface): Promise<void> {
+  const { client, env } = await wire($)
+  const logged = await $.process.run(['node', client, 'log', '--json', '-n', '200'], { env })
+  const entries: FeedLine[] = []
+  let last: string | null = null
+
+  for (const raw of logged.stdout.split('\n')) {
+    try {
+      const one: { at?: number; line?: string; ref?: string; kind?: string } = JSON.parse(raw)
+
+      if (typeof one.line === 'string') {
+        entries.push({ at: one.at ?? 0, line: one.line })
+
+        if (typeof one.ref === 'string') {
+          last = one.kind === 'closed' || one.kind === 'moved' ? null : one.ref
+        }
+      }
+    } catch {
+      // not a log line
+    }
+  }
+
+  if (logged.exitCode !== 0 || entries.length === 0) {
+    return
+  }
+
+  await update($, feed, () => entries)
+  const ref = last
+  await update($, focus, () => ref)
+  $.ui.status(ref === null ? undefined : `wire ▸ ${ref}`)
 }
 
 // Whether this session has a wire identity; decides which note the system prompt carries.
@@ -71,13 +99,7 @@ async function handle($: EngineInterface, raw: string): Promise<void> {
   }
 
   isSetUp = true
-  await note($, ev.line)
-
-  if (ev.kind === 'msg' && ev.ref) {
-    const ref = ev.ref
-    await update($, focus, () => ref)
-    $.ui.status(`wire ▸ ${ref}`)
-  }
+  await refresh($)
 
   if (ev.kind === 'msg' && ev.from === 'agent') {
     // The other Claude is talking to this one: a turn of its own, once the session is idle.
@@ -102,6 +124,7 @@ async function listen($: EngineInterface): Promise<void> {
     let buffer = ''
     const who = await $.process.run(['node', client, 'whoami'], { env }).catch(() => undefined)
     isSetUp = who?.exitCode === 0
+    await refresh($).catch(() => undefined)
 
     try {
       const child = $.process.spawn({ argv: ['node', client, 'listen', '--json'], env })
@@ -144,6 +167,7 @@ export const register: Register = on => {
   on('command.run', { command: 'wire' }, async $ => {
     const { client, env } = await wire($)
     const listed = await $.process.run(['node', client, 'ls'], { env })
+    await refresh($)
     const opened = await $.ui.open({ id: PANE, title: 'wire' })
     const text = (listed.stdout || listed.stderr).trim()
     const parts = [text === '' ? 'No wire contacts yet.' : text]
@@ -183,7 +207,7 @@ export const register: Register = on => {
         const where = REF.exec(sent.stdout)?.[1] ?? to ?? 'wire'
         const line = `you → ${where}: ${words}`
         $.ui.log(line)
-        await note($, line)
+        await refresh($)
         await update($, pending, list => [...list, line].slice(-50))
 
         return { text: e.text }
@@ -214,15 +238,8 @@ export const register: Register = on => {
     const ran = await next(e)
 
     if (WIRE_COMMAND.test(e.command) && ran.deny === undefined && ran.isError !== true) {
-      // What this side's Claude did with wire joins the feed, and the conversation it touched takes focus.
-      const said = /--to\s+(\S+)/.exec(e.command)?.[1] ?? REF.exec(e.command)?.[1]
-      const verb = WIRE_COMMAND.exec(e.command)?.[2] ?? 'send'
-      await note($, `Claude ran: wire ${verb}${said === undefined ? '' : ` ${said}`}`)
-
-      if (said !== undefined && REF.test(said) && verb !== 'close') {
-        await update($, focus, () => said)
-        $.ui.status(`wire ▸ ${said}`)
-      }
+      // The client logged what this side's Claude just did with wire: show it.
+      await refresh($)
     }
 
     return ran
