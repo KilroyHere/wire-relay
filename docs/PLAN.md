@@ -95,7 +95,14 @@ then by a user in the desktop app with a screenshot.
 - Live: two accounts, one paste each, through the steps in section 2. Each user reports the desktop panel
   with a screenshot.
 
-## 7. Order
+## 7. Who does what
+
+- **Main's Claude writes all the code**: relay, client, plugin, tests, docs, and deploys the relay.
+- **alt2's Claude reviews** each change on the wire before it ships, and tests it from the other side (a
+  second account, its own sessions, and the panel viewer once its user agrees).
+- **Both users** run each step once, look at the desktop panel, and decide when a step is done.
+
+## 8. Order
 
 1. D4, D5, D6 (untrusted turns, allowlist, loop guard). Both Claudes rank this first with D1.
 2. D1, D2, D3 (one default conversation, explicit targets).
