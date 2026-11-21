@@ -89,11 +89,15 @@ start)
 shot)
   tmux has-session -t "$NAME" 2>/dev/null || die "not running: $0 start"
   if [ "${2:-}" = "--panel" ]; then
-    # The panel starts at the column where most rows have a frame line '│' (its left border).
+    # Docked (wide terminals): the panel starts at the column where most rows have its left border '│'.
+    # Above the prompt (narrow terminals): it is the framed block from its '╭' row to its '╰' row.
     screen | node -e '
       const lines = require("fs").readFileSync(0, "utf8").split("\n"), count = new Map();
-      for (const l of lines) { const cs = [...l]; cs.forEach((c, i) => { if (c === "│" && i > 10) count.set(i, (count.get(i) || 0) + 1); }); }
-      const col = [...count].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? 0;
+      for (const l of lines) { [...l].forEach((c, i) => { if (c === "│" && i > 10) count.set(i, (count.get(i) || 0) + 1); }); }
+      const top = lines.findIndex((l) => /^╭/.test(l)), bottom = lines.findIndex((l, i) => top >= 0 && i > top && /^╰/.test(l));
+      if (top >= 0 && bottom > top) { for (const l of lines.slice(top, bottom + 1)) console.log(l.replace(/\s+$/, "")); process.exit(0); }
+      const [col, hits] = [...count].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0] ?? [0, 0];
+      if (hits < 8) { console.log("(no panel on screen)"); process.exit(0); }
       for (const l of lines) console.log([...l].slice(col).join("").replace(/\s+$/, ""));' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
   else
     screen

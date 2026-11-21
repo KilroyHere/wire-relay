@@ -850,6 +850,8 @@ export const register: Register = on => {
     // A docked panel scrolls, so it holds the whole conversation and opens at the newest message. A small
     // one shows the newest messages that fit, keeping the header and the text box in view.
     const isRoomy = e.props.placement !== 'inline' && !isShort
+    // With several conversations open, Claude Code draws a tab row with their names: no header needed.
+    const hasTabs = (await $.ui.panes()).filter(pane => pane.id === PANE || pane.id.startsWith('c-')).length > 1
     // Bubbles never reach the panel's edge: they wrap inside the width less a margin.
     const widest = Math.max(16, e.props.bodyColumns - 6)
     const textWidth = widest - 4
@@ -863,13 +865,18 @@ export const register: Register = on => {
         return Math.min(rows, foldRows) + 3 + (item.time === undefined ? 0 : 1) + (rows > foldRows ? 1 : 0) + (item.state === undefined ? 0 : 1)
       }
 
-      return item.type === 'notice' ? rowsOf(item.text, textWidth) + 1 : rowsOf(item.text, textWidth) + 4
+      if (item.type === 'notice') {
+        return rowsOf(item.text, textWidth) + 1
+      }
+
+      // Cards are one line plus a button in a small panel, so messages keep the room.
+      return isRoomy ? rowsOf(item.text, textWidth) + 4 : 2
     }
     const all = view.items.slice(-150)
     let shown = all
 
     if (!isRoomy && !(await read($, showAll))) {
-      let room = e.props.scroll.bodyRows - (isShort ? 1 : 2) - 4 - 2
+      let room = e.props.scroll.bodyRows - (hasTabs ? 0 : isShort ? 1 : 2) - 4 - 2
       const fit: Item[] = []
 
       for (let index = all.length - 1; index >= 0; index -= 1) {
@@ -932,7 +939,13 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" paddingX={1}>
-        {isShort ? (
+        {hasTabs ? (
+          peerLine !== '' && (
+            <Text size="caption" dimColor>
+              {peerLine}
+            </Text>
+          )
+        ) : isShort ? (
           <Text weight="semibold">{to === null ? 'wire' : `${view.contact} · ${topic}${peerLine === '' ? '' : ` · ${peerLine}`}`}</Text>
         ) : (
           <Box flexDirection="column">
@@ -968,6 +981,30 @@ export const register: Register = on => {
             if (item.type === 'lobby' || item.type === 'verify') {
               const isLobby = item.type === 'lobby'
               const target = item.type === 'lobby' ? item.ref : item.contact
+
+              const button = (
+                <Button
+                  key={`${isLobby ? 'take' : 'verify'}-${target}`}
+                  variant="primary"
+                  label={isLobby ? 'Take it here' : 'The codes match'}
+                  onPress={() => {
+                    void (isLobby
+                      ? act($, ['take', target], `you took ${target} into this session`)
+                      : act($, ['verify', target, '--confirmed'], `you verified ${target}`))
+                  }}
+                />
+              )
+
+              if (!isRoomy) {
+                return (
+                  <Box flexDirection="column">
+                    <Text color="warning" wrap="truncate-end">
+                      {item.text}
+                    </Text>
+                    {button}
+                  </Box>
+                )
+              }
 
               return (
                 <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
