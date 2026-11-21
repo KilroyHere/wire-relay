@@ -19,7 +19,8 @@
 //   POST /p/<pair>/ack     {handle, upto}
 //   POST /p/<pair>/note    {conv, note?}
 //   POST /p/<pair>/convs   {}
-//   POST /p/<pair>/close   {conv}
+//   POST /p/<pair>/close   {conv}                 (not the default conversation)
+//   POST /p/<pair>/clear   {conv}                 delete its waiting messages and note
 //   POST /p/<pair>/revoke  {}
 //   vault (x-wire-vault-token; an encrypted copy of a person's identity + contacts, so new sessions can restore it):
 //   POST /vault/<id>/get   {}
@@ -45,6 +46,9 @@ const MAX_STREAMS = 8;            // per side
 const MAX_OPEN_CONVS = 200;       // per pairing
 const MAX_VAULT = 256 * 1024;     // one encrypted identity blob
 const ID = /^[A-Za-z0-9_-]{6,64}$/;
+// Every pairing has this conversation. It has no title (clients call it "General"), cannot be closed, and
+// attaches itself to a person's session when only one of their sessions is listening.
+const DEFAULT = 'general';
 const HEX64 = /^[a-f0-9]{64}$/;
 const PUB = /^[A-Za-z0-9_-]{43}$/;
 
@@ -146,6 +150,29 @@ export class PairV2 extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS msg (id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT, sender TEXT, body TEXT, ts INTEGER)`);
   }
 
+  ensureDefault() {
+    if (!this.get('claimed') || this.conv(DEFAULT)) return;
+    const now = Date.now();
+    this.sql.exec(`INSERT INTO conv (id, title, opener, created, last) VALUES (?, '', NULL, ?, ?)`, DEFAULT, now, now);
+  }
+  // A side's listening sessions, one entry per session handle.
+  listening(side) { return [...new Set([...this.streams.values()].filter((s) => s.side === side).map((s) => s.handle))]; }
+  // The default conversation has no session on `side` and something is waiting there: attach it to the
+  // only listening session, or ask every listening session through a lobby notice.
+  offerDefault(side) {
+    const c = this.conv(DEFAULT);
+    if (!c || c['att_' + side]) return;
+    const here = this.listening(side);
+    if (here.length === 1) {
+      this.sql.exec(`UPDATE conv SET att_${side} = ? WHERE id = ?`, here[0], DEFAULT);
+      this.push(side, { t: 'attached', conv: DEFAULT }, here[0]);
+      const other = side === 'a' ? 'b' : 'a';
+      for (const r of this.sql.exec(`SELECT id, body FROM msg WHERE conv = ? AND sender = ? ORDER BY id`, DEFAULT, other))
+        this.push(side, { t: 'msg', id: r.id, conv: DEFAULT, body: r.body }, here[0]);
+    } else if (here.length > 1) {
+      this.push(side, { t: 'lobby', conv: DEFAULT, title: '', opener: null, created: c.created });
+    }
+  }
   get(k) { if (!this.ready) return null; const r = this.sql.exec(`SELECT v FROM meta WHERE k = ?`, k).toArray()[0]; return r ? r.v : null; }
   set(k, v) { this.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)`, k, String(v)); }
   conv(id) { return this.sql.exec(`SELECT * FROM conv WHERE id = ?`, id).toArray()[0]; }
@@ -169,6 +196,7 @@ export class PairV2 extends DurableObject {
     const want = this.get('tok_' + side), tok = req.headers.get('x-wire-token') || '';
     if (!want || !tok || want !== (await sha(tok))) return json({ error: 'unauthorized' }, 401);
     const other = side === 'a' ? 'b' : 'a';
+    this.ensureDefault();
 
     if (action === 'stream' && req.method === 'GET')
       return this.stream(side, other, url.searchParams.get('handle') || '', Number(url.searchParams.get('since')) || 0);
@@ -183,6 +211,7 @@ export class PairV2 extends DurableObject {
       case 'note': return this.note(b);
       case 'convs': return this.convs(side, other);
       case 'close': return this.close(other, b);
+      case 'clear': return this.clear(b);
       case 'revoke': return this.revoke(other);
     }
     return json({ error: 'unknown action' }, 404);
@@ -205,6 +234,7 @@ export class PairV2 extends DurableObject {
     if ((await sha(b.invite)) !== this.get('invite_hash')) return json({ error: 'wrong invite' }, 403);
     this.set('claimed', Date.now()); this.set('pub_b', b.pub_b); this.set('tok_b', b.tok_b);
     this.sql.exec(`DELETE FROM meta WHERE k = 'invite_hash'`);
+    this.ensureDefault();
     this.push('a', { t: 'joined', peer_pub: b.pub_b });
     return json({ ok: true, pub_a: this.get('pub_a') });
   }
@@ -229,8 +259,17 @@ export class PairV2 extends DurableObject {
       convs: this.sql.exec(`SELECT id, closed, att_${side} AS att FROM conv`).toArray()
         .map((c) => ({ conv: c.id, closed: !!c.closed, mine: c.att === handle })),
     });
-    for (const c of this.sql.exec(`SELECT id, title, opener, created FROM conv WHERE closed = 0 AND att_${side} IS NULL`))
+    for (const c of this.sql.exec(`SELECT id, title, opener, created FROM conv WHERE closed = 0 AND att_${side} IS NULL AND id != ?`, DEFAULT))
       s.write({ t: 'lobby', conv: c.id, title: c.title, opener: c.opener, created: c.created });
+    const waiting = this.sql.exec(`SELECT COUNT(*) AS n FROM msg WHERE conv = ? AND sender = ?`, DEFAULT, other).one().n;
+    if (waiting > 0 && !this.conv(DEFAULT)?.['att_' + side]) {
+      if (this.listening(side).length === 1) {
+        this.sql.exec(`UPDATE conv SET att_${side} = ? WHERE id = ?`, handle, DEFAULT);
+        s.write({ t: 'attached', conv: DEFAULT });
+      } else {
+        s.write({ t: 'lobby', conv: DEFAULT, title: '', opener: null, created: this.conv(DEFAULT).created });
+      }
+    }
     for (const r of this.sql.exec(`SELECT m.id, m.conv, m.body FROM msg m JOIN conv c ON c.id = m.conv
         WHERE m.sender = ? AND m.id > ? AND c.att_${side} = ? ORDER BY m.id`, other, since, handle))
       s.write({ t: 'msg', id: r.id, conv: r.conv, body: r.body });
@@ -256,6 +295,8 @@ export class PairV2 extends DurableObject {
     const prev = c['att_' + side];
     this.sql.exec(`UPDATE conv SET att_${side} = ? WHERE id = ?`, b.handle, c.id);
     if (prev && prev !== b.handle) this.push(side, { t: 'detached', conv: c.id }, prev);
+    // Taken from the lobby: the person's other sessions drop their lobby notice.
+    if (!prev) for (const h of this.listening(side)) if (h !== b.handle) this.push(side, { t: 'taken', conv: c.id }, h);
     if (prev !== b.handle)
       for (const r of this.sql.exec(`SELECT id, body FROM msg WHERE conv = ? AND sender = ? ORDER BY id`, c.id, other))
         this.push(side, { t: 'msg', id: r.id, conv: c.id, body: r.body }, b.handle);
@@ -271,15 +312,19 @@ export class PairV2 extends DurableObject {
     const { id } = this.sql.exec(`INSERT INTO msg (conv, sender, body, ts) VALUES (?, ?, ?, ?) RETURNING id`, c.id, side, b.body, now).one();
     this.sql.exec(`UPDATE conv SET last = ? WHERE id = ?`, now, c.id);
     await this.ensureAlarm(now + MSG_TTL);
-    const dest = c['att_' + other];
+    if (c.id === DEFAULT && !c['att_' + other]) this.offerDefault(other);
+    const dest = this.conv(c.id)['att_' + other];
     if (dest) this.push(other, { t: 'msg', id, conv: c.id, body: b.body }, dest);
     return json({ id, delivered_to_session: !!dest && [...this.streams.values()].some((s) => s.side === other && s.handle === dest) });
   }
 
   ack(side, b) {
     if (!ID.test(b.handle || '')) return json({ error: 'bad handle' }, 400);
+    const upto = Number(b.upto) || 0;
     this.sql.exec(`DELETE FROM msg WHERE sender != ? AND id <= ? AND conv IN (SELECT id FROM conv WHERE att_${side} = ?)`,
-      side, Number(b.upto) || 0, b.handle);
+      side, upto, b.handle);
+    // Tells the sender's sessions their messages up to `upto` reached a session (shown as "delivered").
+    this.push(side === 'a' ? 'b' : 'a', { t: 'acked', upto });
     return json({ ok: true });
   }
 
@@ -305,9 +350,18 @@ export class PairV2 extends DurableObject {
     });
   }
 
+  clear(b) {
+    const c = this.conv(b.conv || '');
+    if (!c) return json({ error: 'no such conversation' }, 404);
+    this.sql.exec(`DELETE FROM msg WHERE conv = ?`, c.id);
+    this.sql.exec(`UPDATE conv SET note = NULL WHERE id = ?`, c.id);
+    return json({ ok: true });
+  }
+
   close(other, b) {
     const c = this.conv(b.conv || '');
     if (!c) return json({ error: 'no such conversation' }, 404);
+    if (c.id === DEFAULT) return json({ error: 'the default conversation cannot be closed (clear it, or revoke the pairing)' }, 409);
     this.sql.exec(`UPDATE conv SET closed = 1, last = ? WHERE id = ?`, Date.now(), c.id);
     this.sql.exec(`DELETE FROM msg WHERE conv = ?`, c.id);
     this.push(other, { t: 'closed', conv: c.id });

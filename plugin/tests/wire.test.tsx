@@ -90,7 +90,7 @@ test('the panel shows the conversation in focus and its text box sends as the pe
 
   const sends = runs.filter(one => one.argv.includes('send'))
   expect(sends).toHaveLength(1)
-  expect(sends[0]?.argv).toEqual(['node', '/plugin/client/wire.mjs', 'send', '--as', 'human', '--to', REF])
+  expect(sends[0]?.argv).toEqual(['node', '/plugin/client/wire.mjs', 'send', '--as', 'human', '--typed', '--to', REF])
   expect(sends[0]?.stdin).toBe('on my way')
   // No model turn for it, and a fresh, empty text box.
   expect(entered).toBe(0)

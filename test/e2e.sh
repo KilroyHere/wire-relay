@@ -53,23 +53,39 @@ ok "verified"                   "verified ✓"              "$(U contacts)"
 
 echo "step 3: conversations bound to sessions"
 LOG=p1.out listen P
-C1=$(P open uday --about "api-v2" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
+
+echo "default conversation"
+sleep 1
+P send --to uday "hello in general" >/dev/null; wait_for u1.out "hello in general"
+ok "it attaches to the only listening session" "\"General\"\] Claude \(Priya\) \[agent\]: hello in general" "$(cat "$T/u1.out")"
+ok "it cannot be closed"        "cannot be closed"        "$(U close priya 2>&1)"
+U send --to priya --as human "words my Claude relays" >/dev/null; wait_for p1.out "words my Claude relays"
+ok "relayed words are marked"   "Uday \[human, relayed by their Claude\]: words my Claude relays" "$(cat "$T/p1.out")"
+U send --to priya --as human --typed "words I typed" >/dev/null; wait_for p1.out "words I typed"
+ok "typed words are not"        "Uday \[human\]: words I typed" "$(cat "$T/p1.out")"
+sleep 1
+ok "the sender learns it was delivered" '"kind":"acked"' "$(U log --json)"
+ok "open without --new uses it"  "General\" is in this session" "$(SESS=u-s1 U open priya)"
+ok "a topic needs --new"         "add --new|For a separate topic" "$(U open priya --about stuff 2>&1)"
+C1=$(P open uday --new --about "api-v2" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
 P send --to "uday/$C1" "shape ok?" >/dev/null
 wait_for u1.out "🔔"
 ok "lobby notice"               "🔔 \[priya/$C1 \"api-v2\"\]" "$(cat "$T/u1.out")"
 U take "priya/$C1" >/dev/null; wait_for u1.out "shape ok"
 ok "held message delivered on take" "Claude \(Priya\) \[agent\]: shape ok" "$(cat "$T/u1.out")"
-U send --as human "ship it" >/dev/null; wait_for p1.out "ship it"
+ok "a send must name its conversation" "Say which conversation" "$(U send --as human "ship it" 2>&1)"
+U send --to "priya/$C1" --as human --typed "ship it" >/dev/null; wait_for p1.out "ship it"
 ok "reply without --to"         "Uday \[human\]: ship it" "$(cat "$T/p1.out")"
 LOG=u2.out SESS=u-s2 listen U
-C2=$(SESS=u-s2 U open priya --about "deploy" | grep -o 'priya/[A-Za-z0-9_-]*' | cut -d/ -f2)
+C2=$(SESS=u-s2 U open priya --new --about "deploy" | grep -o 'priya/[A-Za-z0-9_-]*' | cut -d/ -f2)
 P take "uday/$C2" >/dev/null; P send --to "uday/$C2" "deploy q" >/dev/null; wait_for u2.out "deploy q"
 ok "parallel conv reaches its own session" "deploy q"     "$(cat "$T/u2.out")"
 ok "and not the other session"  "^$"                      "$(grep 'deploy q' "$T/u1.out")"
 U note "priya/$C1" "agreed: {id,email,role}" >/dev/null
 ok "shared encrypted note"      "agreed"                  "$(P note "uday/$C1")"
 LOG=u3.out SESS=u-s3 listen U
-ok "takeover reports move"      "other session was told"  "$(SESS=u-s3 U attach "priya/$C1")"
+ok "moving needs --move"        "attached to another of your sessions" "$(SESS=u-s3 U attach "priya/$C1" 2>&1)"
+ok "takeover reports move"      "other session was told"  "$(SESS=u-s3 U attach "priya/$C1" --move)"
 wait_for u1.out "📴"
 ok "old session gets 📴"         "📴"                       "$(cat "$T/u1.out")"
 P send --to "uday/$C1" "after takeover" >/dev/null; wait_for u3.out "after takeover"
@@ -82,7 +98,7 @@ ok "and what this session did"  "attached to this session" "$LOGGED"
 ok "sent messages are logged"   "you: ship it"            "$(U log)"
 
 echo "catch-up on reconnect"
-C3=$(P open uday --about "catchup" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
+C3=$(P open uday --new --about "catchup" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
 SESS=u-s4 U take "priya/$C3" >/dev/null
 P close "uday/$C3" >/dev/null
 LOG=u4.out SESS=u-s4 listen U; wait_for u4.out "not listening"
@@ -118,6 +134,17 @@ P close "uday/$C1" >/dev/null; wait_for u3.out "🚪"
 ok "close reaches other side"   "🚪"                       "$(cat "$T/u3.out")"
 U revoke priya >/dev/null 2>&1; wait_for p1.out "⛔"
 ok "revoke reaches other side"  "⛔"                       "$(cat "$T/p1.out")"
+
+echo "default conversation with two sessions open"
+LINK3=$(U invite lee 2>/dev/null | grep '/i#' | tr -d ' ')
+WIRE_DIR=$T/lee node plugin/client/wire.mjs join "$LINK3" --name Lee >/dev/null 2>&1
+L() { WIRE_DIR=$T/lee CLAUDE_CODE_SESSION_ID=$SESS node "$ROOT/plugin/client/wire.mjs" "$@"; }
+LOG=l1.out SESS=l-s1 listen L; LOG=l2.out SESS=l-s2 listen L; sleep 1.5
+U send --to lee "which session gets this?" >/dev/null; wait_for l1.out "🔔"; wait_for l2.out "🔔"
+ok "both sessions get a lobby notice" "🔔.*General" "$(cat "$T/l1.out")"
+SESS=l-s2 L take uday >/dev/null; wait_for l2.out "which session gets this"; wait_for l1.out "taken in another"
+ok "the one that takes it gets the message" "which session gets this" "$(cat "$T/l2.out")"
+ok "the other drops its notice" "taken in another of your sessions" "$(cat "$T/l1.out")"
 
 echo "offline revoke"
 LINK2=$(U invite priya2 2>/dev/null | grep '/i#' | tr -d ' ')
