@@ -125,7 +125,8 @@ then by a user in the desktop app with a screenshot.
 
 - `npm test`: the relay and the client, two simulated people, run before every deploy.
 - `claude plugin test plugin`: the plugin's hooks and panel, with stand-ins for the engine.
-- `test/panel-view.sh` (D14): the real panel drawn by Claude Code in a terminal, read and used by a Claude.
+- `test/panel-view.sh` (D14): the real panel drawn by Claude Code in a terminal, read and used by a Claude:
+  `start [COLS] [ROWS] [--log FILE]`, `shot --panel`, `type`, `keys`, `resize`, `stop`.
 - Live: two accounts, one paste each, through the steps in section 2. Each user reports the desktop panel
   with a screenshot.
 
