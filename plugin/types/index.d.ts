@@ -8,8 +8,13 @@ export type FeedEntry = {
   title?: string
   from?: string
   name?: string
+  self?: string
+  via?: string
   text?: string
   code?: string
+  id?: number
+  upto?: number
+  waiting?: boolean
 }
 
 declare module 'claude-code' {
@@ -19,6 +24,8 @@ declare module 'claude-code' {
       focus: string | null
       pending: Shaped<string[]>
       draft: number
+      expanded: Shaped<string[]>
+      showAll: boolean
     }
   }
 }

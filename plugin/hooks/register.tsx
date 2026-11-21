@@ -17,8 +17,13 @@ const focus = atom({ plugin: 'wire', key: 'focus' } as const, null)
 const pending = atom({ plugin: 'wire', key: 'pending' } as const, [], { shape: 'pending-1' })
 // Counts sent messages: the text box is keyed by it, so it is drawn empty again after each one.
 const draft = atom({ plugin: 'wire', key: 'draft' } as const, 0)
+// Long messages the person chose to see in full.
+const expanded = atom({ plugin: 'wire', key: 'expanded' } as const, [], { shape: 'expanded-1' })
+// In a small panel (above the prompt, or a short terminal) only the newest messages that fit show,
+// until the person asks for the rest.
+const showAll = atom({ plugin: 'wire', key: 'showAll' } as const, false)
 
-const REF = /\b([a-z0-9][a-z0-9_-]*\/[A-Za-z0-9_-]{8})\b/
+const REF = /\b([a-z0-9][a-z0-9_-]*\/[A-Za-z0-9_-]{6,64})\b/
 const WIRE_COMMAND = /(^|[\s;&|(])wire\s+(send|open|take|attach|close|focus|verify|revoke)\b/
 
 const RULES = `# wire (private chats with other people and their Claude)
@@ -55,12 +60,44 @@ type Wire = { client: string; env: Record<string, string> }
 
 // One row of the panel.
 type Item =
-  | { type: 'said'; who: string; text: string; isMine: boolean; isAgent: boolean }
+  | {
+      type: 'said'
+      key: string
+      at: number
+      who: string
+      text: string
+      isMine: boolean
+      isAgent: boolean
+      // A time, on the first message of a run or after a gap.
+      time?: string
+      // Delivery, on the person's last message only.
+      state?: 'sent' | 'waiting' | 'delivered'
+    }
   | { type: 'notice'; text: string; isWarning?: true }
   | { type: 'lobby'; text: string; ref: string }
   | { type: 'verify'; text: string; contact: string }
 
-type Chat = { header: string; contact: string; title: string; items: Item[] }
+type Chat = { contact: string; title: string; items: Item[] }
+
+const MINUTE = 60_000
+const TITLE_OF_DEFAULT = 'General'
+
+// "just now", "5 min ago", "3 h ago", "2 days ago": relative, so it needs no time zone.
+function ago(at: number, now: number): string {
+  const minutes = Math.round((now - at) / MINUTE)
+
+  if (minutes < 1) {
+    return 'just now'
+  }
+
+  if (minutes < 60) {
+    return `${minutes} min ago`
+  }
+
+  const hours = Math.round(minutes / 60)
+
+  return hours < 36 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
+}
 
 // A notice in plain words (the log's own lines carry ids and are for the transcript).
 function plain(one: FeedEntry): Item | null {
@@ -144,11 +181,12 @@ function pickFocus(entries: readonly FeedEntry[]): string | null {
 }
 
 // What the panel shows for the conversation in focus: its messages, and the notices that need the person.
-function chat(entries: readonly FeedEntry[], to: string | null): Chat {
+function chat(entries: readonly FeedEntry[], to: string | null, now: number): Chat {
   const taken = new Set<string>()
   const verified = new Set<string>()
   const lastJoin = new Map<string, number>()
-  let title = ''
+  const delivered = new Map<string, number>()
+  let title = to !== null && to.endsWith('/general') ? TITLE_OF_DEFAULT : ''
 
   entries.forEach((one, index) => {
     if (one.kind === 'local' && one.ref !== undefined) {
@@ -163,51 +201,66 @@ function chat(entries: readonly FeedEntry[], to: string | null): Chat {
       lastJoin.set(one.contact, index)
     }
 
-    if (one.ref === to && one.title !== undefined) {
+    if (one.kind === 'acked' && one.contact !== undefined && one.upto !== undefined) {
+      delivered.set(one.contact, Math.max(delivered.get(one.contact) ?? 0, one.upto))
+    }
+
+    if (one.ref === to && one.title !== undefined && one.title !== '' && one.title !== '?') {
       title = one.title
     }
   })
 
   const items: Item[] = []
   const elsewhere = new Set<string>()
+  let lastSaid: { who: string; at: number } | null = null
+  let lastMine: Extract<Item, { type: 'said' }> | null = null
+  let lastMineEntry: FeedEntry | null = null
 
   entries.forEach((one, index) => {
     const here = one.ref !== undefined && one.ref === to
 
-    if (one.kind === 'msg' && one.text !== undefined) {
-      if (here) {
-        const name = one.name ?? one.contact ?? 'them'
-        items.push({
-          type: 'said',
-          who: one.from === 'agent' ? `${name}'s Claude` : name,
-          text: one.text,
-          isMine: false,
-          isAgent: one.from === 'agent',
-        })
-      } else if (one.ref !== undefined && !elsewhere.has(one.ref)) {
-        elsewhere.add(one.ref)
-        items.push({
-          type: 'notice',
-          text: `New messages in "${one.title ?? one.ref}". To switch: /wire ${one.ref}`,
-        })
+    if ((one.kind === 'msg' || one.kind === 'sent') && one.text !== undefined) {
+      if (!here) {
+        if (one.kind === 'msg' && one.ref !== undefined && !elsewhere.has(one.ref)) {
+          elsewhere.add(one.ref)
+          items.push({ type: 'notice', text: `New messages in "${one.title || one.ref}". To switch: /wire ${one.ref}` })
+        }
+
+        return
       }
-    } else if (one.kind === 'sent' && one.text !== undefined) {
-      if (here) {
-        items.push({
-          type: 'said',
-          who: one.from === 'human' ? 'You' : 'Your Claude',
-          text: one.text,
-          isMine: true,
-          isAgent: one.from !== 'human',
-        })
+
+      const isMine = one.kind === 'sent'
+      const name = one.name ?? one.contact ?? 'them'
+      const self = one.self !== undefined && one.self.toLowerCase() !== name.toLowerCase() ? ` (calls themselves ${one.self})` : ''
+      const who = isMine
+        ? one.from === 'human'
+          ? one.via === 'claude' ? 'You, relayed by your Claude' : 'You'
+          : 'Your Claude'
+        : one.from === 'agent'
+          ? `${name}'s Claude`
+          : `${name}${self}${one.via === 'claude' ? ', relayed by their Claude' : ''}`
+      const isNewRun = lastSaid === null || lastSaid.who !== who || one.at - lastSaid.at > 10 * MINUTE
+      const item: Extract<Item, { type: 'said' }> = {
+        type: 'said',
+        key: `${one.at}-${index}`,
+        at: one.at,
+        who,
+        text: one.text,
+        isMine,
+        isAgent: one.from === 'agent',
+        ...(isNewRun ? { time: ago(one.at, now) } : {}),
+      }
+      items.push(item)
+      lastSaid = { who, at: one.at }
+
+      if (isMine) {
+        lastMine = item
+        lastMineEntry = one
       }
     } else if (one.kind === 'lobby' && one.ref !== undefined) {
       if (!taken.has(one.ref)) {
-        items.push({
-          type: 'lobby',
-          text: `${one.contact ?? 'Someone'} wants to talk about "${one.title ?? ''}".`,
-          ref: one.ref,
-        })
+        const topic = one.ref.endsWith('/general') ? 'your default conversation' : `"${one.title ?? ''}"`
+        items.push({ type: 'lobby', text: `${one.contact ?? 'Someone'} wants to talk in ${topic}.`, ref: one.ref })
       }
     } else if (one.kind === 'joined' && one.contact !== undefined) {
       if (!verified.has(one.contact) && lastJoin.get(one.contact) === index) {
@@ -217,7 +270,7 @@ function chat(entries: readonly FeedEntry[], to: string | null): Chat {
           contact: one.contact,
         })
       }
-    } else if (one.kind !== 'msg' && one.kind !== 'sent') {
+    } else if (one.kind !== 'msg' && one.kind !== 'sent' && one.kind !== 'acked') {
       // Notices about one conversation show only in that conversation; the rest (a pairing ended) always.
       const notice = one.ref === undefined || here ? plain(one) : null
 
@@ -227,14 +280,16 @@ function chat(entries: readonly FeedEntry[], to: string | null): Chat {
     }
   })
 
-  const contact = to === null ? '' : (to.split('/')[0] ?? '')
+  // Delivery, under the person's last message: delivered once the other side's session confirmed it.
+  const mine = lastMine as Extract<Item, { type: 'said' }> | null
+  const mineEntry = lastMineEntry as FeedEntry | null
 
-  return {
-    header: to === null ? 'No conversation yet' : `${contact} · "${title}"`,
-    contact,
-    title,
-    items,
+  if (mine !== null && mineEntry !== null) {
+    const upto = delivered.get(mineEntry.contact ?? '') ?? 0
+    mine.state = mineEntry.id !== undefined && mineEntry.id <= upto ? 'delivered' : mineEntry.waiting === true ? 'waiting' : 'sent'
   }
+
+  return { contact: to === null ? '' : (to.split('/')[0] ?? ''), title, items }
 }
 
 async function isPaneUp($: EngineInterface): Promise<boolean> {
@@ -274,10 +329,11 @@ async function refresh($: EngineInterface): Promise<void> {
   await update($, feed, () => entries)
   const ref = pickFocus(entries)
   await update($, focus, () => ref)
-  $.ui.status(ref === null ? undefined : `wire ▸ ${ref}`)
+  const view = chat(entries, ref, Date.now())
+  $.ui.status(ref === null ? undefined : `▸ ${view.contact} · ${view.title || ref}`)
 
   if (ref !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) {
-    await $.ui.open({ id: PANE, title: 'wire' })
+    await $.ui.open({ id: PANE, title: 'wire', rows: 22 })
   }
 
   await $.ui.scroll({ in: PANE, to: 'end' }).catch(() => undefined)
@@ -444,16 +500,17 @@ export const register: Register = on => {
 
     const listed = await $.process.run(['node', client, 'ls'], { env })
     await refresh($)
-    const opened = await $.ui.open({ id: PANE, title: 'wire' })
+    // /wire means the person wants to chat: the panel takes the keyboard, its text box first (Esc returns).
+    const opened = await $.ui.open({ id: PANE, title: 'wire', rows: 22, focus: true })
     const text = (listed.stdout || listed.stderr).trim()
     parts.push(text === '' ? 'No wire contacts yet.' : text)
 
     if (!opened.isPlaced) {
       // Not every app shows panels: the conversation is then printed here instead.
-      const view = chat(await read($, feed), await read($, focus))
+      const view = chat(await read($, feed), await read($, focus), Date.now())
       parts.push(
         '',
-        view.header,
+        view.contact === '' ? 'No conversation yet' : `${view.contact} · ${view.title}`,
         ...(view.items.length === 0
           ? ['No messages yet.']
           : view.items.slice(-20).map(item => (item.type === 'said' ? `${item.who}: ${item.text}` : item.text))),
@@ -525,8 +582,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const to = await read($, focus)
-    const view = chat(await read($, feed), to)
+    const now = await $.clock.now()
+    const view = chat(await read($, feed), to, now)
     const field = await read($, draft)
+    const open = new Set(await read($, expanded))
+    const topic = view.title === '' ? (to ?? '') : view.title
 
     if (e.props.placement === 'widget') {
       // Minimized: the conversation and its latest line, at a glance.
@@ -534,7 +594,7 @@ export const register: Register = on => {
 
       return (
         <Box flexDirection="column">
-          <Text dimColor>{to === null ? 'wire' : view.header}</Text>
+          <Text dimColor>{to === null ? 'wire' : `${view.contact} · ${topic}`}</Text>
           {latest !== undefined && (
             <Text maxLines={2}>{latest.type === 'said' ? `${latest.who}: ${latest.text}` : latest.text}</Text>
           )}
@@ -542,66 +602,123 @@ export const register: Register = on => {
       )
     }
 
-    // The newest rows that fit, so the text box under them stays in view. A bubble costs its text, its
-    // border and, when the speaker changes, a name.
-    const columns = Math.max(20, e.props.bodyColumns - 8)
-    let room = Math.max(6, e.props.scroll.bodyRows - 6)
-    const shown: Item[] = []
+    const isShort = e.props.scroll.bodyRows < 24
+    // A docked panel scrolls, so it holds the whole conversation and opens at the newest message. A small
+    // one shows the newest messages that fit, keeping the header and the text box in view.
+    const isRoomy = e.props.placement !== 'inline' && !isShort
+    // Bubbles never reach the panel's edge: they wrap inside the width less a margin.
+    const widest = Math.max(16, e.props.bodyColumns - 6)
+    const textWidth = widest - 4
+    // A message longer than this many rows folds, with a button to see the rest.
+    const foldRows = isShort ? 4 : 8
 
-    for (let index = view.items.length - 1; index >= 0 && room > 0; index -= 1) {
-      const item = view.items[index]
+    const height = (item: Item): number => {
+      if (item.type === 'said') {
+        const rows = rowsOf(item.text, textWidth)
 
-      if (item === undefined) {
-        break
+        return Math.min(rows, foldRows) + 3 + (item.time === undefined ? 0 : 1) + (rows > foldRows ? 1 : 0) + (item.state === undefined ? 0 : 1)
       }
 
-      room -= rowsOf(item.text, columns) + (item.type === 'notice' ? 1 : 3)
-      shown.unshift(item)
+      return item.type === 'notice' ? rowsOf(item.text, textWidth) + 1 : rowsOf(item.text, textWidth) + 4
+    }
+    const all = view.items.slice(-150)
+    let shown = all
+
+    if (!isRoomy && !(await read($, showAll))) {
+      let room = e.props.scroll.bodyRows - (isShort ? 1 : 2) - 4 - 2
+      const fit: Item[] = []
+
+      for (let index = all.length - 1; index >= 0; index -= 1) {
+        const item = all[index]
+
+        if (item === undefined || (fit.length > 0 && height(item) > room)) {
+          break
+        }
+
+        room -= height(item)
+        fit.unshift(item)
+      }
+
+      shown = fit
+    }
+
+    const hidden = all.length - shown.length
+
+    const bubble = (item: Extract<Item, { type: 'said' }>) => {
+      const rows = rowsOf(item.text, textWidth)
+      const isFolded = rows > foldRows && !open.has(item.key)
+      const shown = isFolded ? `${item.text.slice(0, foldRows * textWidth - 2).trimEnd()}…` : item.text
+      const longest = Math.max(...shown.split('\n').map(line => line.length))
+      const width = Math.min(widest, longest + 4)
+
+      return (
+        <Box flexDirection="column" alignItems={item.isMine ? 'flex-end' : 'flex-start'}>
+          {item.time !== undefined && (
+            <Text size="caption" dimColor>
+              {`${item.who} · ${item.time}`}
+            </Text>
+          )}
+          <Box
+            width={width}
+            borderStyle="round"
+            borderColor={item.isAgent ? 'claude' : item.isMine ? 'suggestion' : 'subtle'}
+            paddingX={1}
+          >
+            <Text wrap="wrap">{shown}</Text>
+          </Box>
+          {rows > foldRows && (
+            <Button
+              key={`more-${item.key}`}
+              plain
+              label={isFolded ? 'Show more' : 'Show less'}
+              onPress={() => {
+                const key = item.key
+                void update($, expanded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key].slice(-50)))
+              }}
+            />
+          )}
+          {item.state !== undefined && (
+            <Text size="caption" dimColor>
+              {item.state === 'delivered' ? 'Delivered' : item.state === 'waiting' ? 'Waiting: they are not listening' : 'Sent'}
+            </Text>
+          )}
+        </Box>
+      )
     }
 
     return (
-      <Box flexDirection="column" height="100%" paddingX={1}>
-        <Box flexDirection="column" paddingBottom={1}>
-          <Text weight="semibold">{to === null ? 'wire' : view.contact}</Text>
-          <Text size="caption" dimColor>
-            {to === null ? 'No conversation yet' : view.title}
-          </Text>
-        </Box>
-        <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" gap={1}>
-          {shown.length === 0 && (
-            <Box alignSelf="center">
-              <Text size="caption" dimColor>
-                {to === null
-                  ? 'Ask Claude to open a conversation, or take one from the lobby.'
-                  : 'No messages yet. Say hello below.'}
-              </Text>
-            </Box>
+      <Box flexDirection="column" paddingX={1}>
+        {isShort ? (
+          <Text weight="semibold">{to === null ? 'wire' : `${view.contact} · ${topic}`}</Text>
+        ) : (
+          <Box flexDirection="column">
+            <Text weight="semibold">{to === null ? 'wire' : view.contact}</Text>
+            <Text size="caption" dimColor>
+              {to === null ? 'No conversation yet' : topic}
+            </Text>
+          </Box>
+        )}
+        <Box flexDirection="column" gap={1} paddingY={1}>
+          {view.items.length === 0 && (
+            <Text size="caption" dimColor>
+              {to === null
+                ? 'Ask Claude to open a conversation, or take one from the lobby.'
+                : 'No messages yet. Say hello below.'}
+            </Text>
           )}
-          {shown.map((item, index) => {
+          {hidden > 0 && (
+            <Button
+              key="earlier"
+              plain
+              label={`Show ${hidden} earlier`}
+              onPress={() => {
+                void update($, showAll, () => true)
+              }}
+            />
+          )}
+          {shown.map(item => {
             if (item.type === 'said') {
-              // Yours on the right, theirs on the left; a Claude's bubble has the accent outline.
-              const before = shown[index - 1]
-              const isNewSpeaker = before === undefined || before.type !== 'said' || before.who !== item.who
-              const side = item.isMine ? 'flex-end' : 'flex-start'
-
-              return (
-                <Box flexDirection="column" alignItems={side}>
-                  {isNewSpeaker && (
-                    <Text size="caption" dimColor>
-                      {item.who}
-                    </Text>
-                  )}
-                  <Box
-                    borderStyle="round"
-                    borderColor={item.isAgent ? 'claude' : item.isMine ? 'suggestion' : 'subtle'}
-                    paddingX={1}
-                    marginLeft={item.isMine ? 4 : 0}
-                    marginRight={item.isMine ? 0 : 4}
-                  >
-                    <Text>{item.text}</Text>
-                  </Box>
-                </Box>
-              )
+              return bubble(item)
             }
 
             if (item.type === 'lobby' || item.type === 'verify') {
@@ -609,8 +726,8 @@ export const register: Register = on => {
               const target = item.type === 'lobby' ? item.ref : item.contact
 
               return (
-                <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1} gap={1}>
-                  <Text>{item.text}</Text>
+                <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+                  <Text wrap="wrap">{item.text}</Text>
                   <Button
                     key={`${isLobby ? 'take' : 'verify'}-${target}`}
                     variant="primary"
@@ -627,7 +744,7 @@ export const register: Register = on => {
 
             return (
               <Box alignSelf="center">
-                <Text size="caption" dimColor={item.isWarning !== true} color={item.isWarning === true ? 'warning' : undefined}>
+                <Text size="caption" wrap="wrap" dimColor={item.isWarning !== true} color={item.isWarning === true ? 'warning' : undefined}>
                   {item.text}
                 </Text>
               </Box>
@@ -635,9 +752,10 @@ export const register: Register = on => {
           })}
         </Box>
         {to !== null && (
-          <Box paddingTop={1}>
+          <Box borderStyle="round" borderColor="promptBorder" paddingX={1}>
             <Input
               key={`say-${field}`}
+              autoFocus
               placeholder={`Message ${view.contact}`}
               submitLabel="send"
               onSubmit={value => {

@@ -48,6 +48,7 @@ test('the panel shows the conversation in focus and its text box sends as the pe
     return { value: ran(0, e.argv.includes('log') ? LOG : `sent to ${REF} as Main`) }
   })
   on('ui.panes', () => ({ value: [{ id: 'wire', title: 'wire', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('clock.now', () => ({ value: 10 * 60_000 }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.scroll', () => ({}))
   on('ui.status', () => ({ value: undefined }))
@@ -76,8 +77,11 @@ test('the panel shows the conversation in focus and its text box sends as the pe
     // Notices are in plain words, without ids.
     expect(await ui.find({ type: 'Text', text: /^You started this conversation$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /lunch at 1\?/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^alt's Claude$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^You$/ })).toBeDefined()
+    // Names sit above each run of messages, with a time.
+    expect(await ui.find({ type: 'Text', text: /^alt's Claude · / })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^You · / })).toBeDefined()
+    // The person's last message says whether it arrived.
+    expect(await ui.find({ type: 'Text', text: /^(Sent|Delivered|Waiting)/ })).toBeDefined()
     // The lobby notice and the unverified contact each come with a button.
     expect(await ui.find({ type: 'Button', key: 'take-bo/Zz91kQpA' })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'verify-alt' })).toBeDefined()
