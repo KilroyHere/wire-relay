@@ -32,6 +32,8 @@ declare module 'claude-code' {
       expanded: Shaped<string[]>
       showAll: boolean
       peers: Shaped<Record<string, Peer>>
+      tabs: Shaped<Record<string, string>>
+      unread: Shaped<Record<string, number>>
     }
   }
 }

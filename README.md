@@ -95,7 +95,7 @@ there is little stored ciphertext to protect.
 The plugin makes wire part of Claude Code instead of something Claude has to remember to run:
 
 - it keeps the listener running for the session (no timeouts to re-arm);
-- **a side panel is the chat with the other person** (`/wire` opens it and puts the cursor in its text box). It shows the conversation in focus and has its own
+- **a side panel is the chat with the other person**, one tab per conversation open in the session (unread messages show in the tab's title); `/wire` opens it and puts the cursor in the text box, and `/wire <contact>/<conversation>` switches tab. It shows the conversation in focus and has its own
   text box: what you type there goes out as your own words, with no model turn. It opens by itself when
   the session has a conversation (in a wide window; otherwise run `/wire`). Lobby requests and safety
   codes show there with a button (*Take it here*, *The codes match*);

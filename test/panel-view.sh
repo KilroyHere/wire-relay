@@ -27,7 +27,7 @@ die() { echo "panel-view: $*" >&2; exit 1; }
 
 sample_log() {
   # A conversation with every kind of row the panel draws: both people, both Claudes, a long message,
-  # an unverified contact, a lobby request and activity in another conversation.
+  # an unverified contact, a lobby request, and a second conversation (so the panel shows two tabs).
   node -e '
     const now = Date.now(), m = 60000, ref = "sam/general";
     const rows = [
@@ -40,6 +40,9 @@ sample_log() {
       { at: now - 20*m, kind: "msg", contact: "sam", ref, title: "General", from: "human", via: "claude", name: "sam", text: "thanks!", line: "📨 sam [human]: thanks!" },
       { at: now - 19*m, kind: "acked", contact: "sam", upto: 2, line: "acked" },
       { at: now - 2*m, kind: "sent", contact: "sam", ref, from: "human", text: "shipping it now", id: 3, line: "↗ you: shipping it now" },
+      { at: now - 30*m, kind: "local", contact: "sam", ref: "sam/Rk2PqZ8a", title: "release notes", line: "↗ opened" },
+      { at: now - 29*m, kind: "msg", contact: "sam", ref: "sam/Rk2PqZ8a", title: "release notes", from: "human", name: "sam", via: "typed", text: "can you draft the release notes?", line: "📨 sam [human]: draft" },
+      { at: now - 3*m, kind: "msg", contact: "sam", ref: "sam/Rk2PqZ8a", title: "release notes", from: "agent", name: "sam", text: "Draft is in the note.", line: "📨 Claude (sam) [agent]: draft" },
       { at: now - 1*m, kind: "lobby", contact: "jo", ref: "jo/Q7kPzX2a", title: "deploy", line: "🔔 jo wants to talk" },
     ];
     for (const r of rows) console.log(JSON.stringify(r));'

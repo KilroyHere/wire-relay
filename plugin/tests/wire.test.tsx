@@ -178,6 +178,7 @@ test('a message from the other Claude starts a turn; one from the person stays o
   })
   on('clock.sleep', () => new Promise<never>(() => undefined))
   on('command.register', () => ({ value: { command: 'wire' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__wire__panel' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.panes', () => ({ value: [{ id: 'wire', title: 'wire', isShown: true, isFocused: false, isPlaced: true }] }))
   on('ui.scroll', () => ({}))

@@ -24,6 +24,22 @@ const expanded = atom({ plugin: 'wire', key: 'expanded' } as const, [], { shape:
 const showAll = atom({ plugin: 'wire', key: 'showAll' } as const, false)
 // What each contact shares: active / away (if they turned presence on) and whether their Claude is listening.
 const peers = atom({ plugin: 'wire', key: 'peers' } as const, {}, { shape: 'peers-1' })
+// One panel per conversation in this session: Claude Code draws them as tabs. Panel id -> conversation ref.
+const tabs = atom({ plugin: 'wire', key: 'tabs' } as const, {}, { shape: 'tabs-1' })
+// Messages that arrived in a tab while another was shown.
+const unread = atom({ plugin: 'wire', key: 'unread' } as const, {}, { shape: 'unread-1' })
+const MAX_TABS = 6
+
+// A panel id for a conversation: letters, digits, '-' and '_' only, so the ref is hashed.
+function tabIdOf(ref: string): string {
+  let hash = 5381
+
+  for (const char of ref) {
+    hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0
+  }
+
+  return `c-${hash.toString(36)}`
+}
 
 const REF = /\b([a-z0-9][a-z0-9_-]*\/[A-Za-z0-9_-]{6,64})\b/
 const WIRE_COMMAND = /(^|[\s;&|(])wire\s+(send|open|take|attach|close|focus|verify|revoke)\b/
@@ -182,6 +198,34 @@ async function wire($: EngineInterface): Promise<Wire> {
 }
 
 // The conversation in focus, from the log: the last one this side acted on that is still open here.
+// The conversations open in this session, oldest activity first.
+function liveRefs(entries: readonly FeedEntry[]): string[] {
+  const live = new Map<string, number>()
+
+  entries.forEach((one, index) => {
+    if (one.kind === 'revoked' && one.contact !== undefined) {
+      for (const ref of [...live.keys()]) {
+        if (ref.startsWith(`${one.contact}/`)) {
+          live.delete(ref)
+        }
+      }
+    }
+
+    if (one.ref === undefined) {
+      return
+    }
+
+    if (one.kind === 'closed' || one.kind === 'moved') {
+      live.delete(one.ref)
+    } else if (one.kind === 'local' || one.kind === 'sent' || one.kind === 'msg') {
+      live.delete(one.ref)
+      live.set(one.ref, index)
+    }
+  })
+
+  return [...live.keys()]
+}
+
 function pickFocus(entries: readonly FeedEntry[]): string | null {
   const live = new Set<string>()
   let own: string | null = null
@@ -261,7 +305,7 @@ function chat(entries: readonly FeedEntry[], to: string | null, now: number): Ch
       if (!here) {
         if (one.kind === 'msg' && one.ref !== undefined && !elsewhere.has(one.ref)) {
           elsewhere.add(one.ref)
-          items.push({ type: 'notice', text: `New messages in "${one.title || one.ref}". To switch: /wire ${one.ref}` })
+          items.push({ type: 'notice', text: `New messages in "${one.title || one.ref}": see its tab, or /wire ${one.ref}` })
         }
 
         return
@@ -333,7 +377,7 @@ function chat(entries: readonly FeedEntry[], to: string | null, now: number): Ch
 async function isPaneUp($: EngineInterface): Promise<boolean> {
   const panes = await $.ui.panes()
 
-  return panes.some(pane => pane.id === PANE && pane.isPlaced)
+  return panes.some(pane => pane.isPlaced && (pane.id === PANE || pane.id.startsWith('c-')))
 }
 
 // Reads the session log into the panel. With a conversation in focus the panel opens by itself
@@ -370,17 +414,71 @@ async function refresh($: EngineInterface): Promise<void> {
   const view = chat(entries, ref, Date.now())
   $.ui.status(ref === null ? undefined : `▸ ${view.contact} · ${view.title || ref}`)
 
-  if (ref !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) {
-    await $.ui.open({ id: PANE, title: 'wire', rows: 22 })
+  // Tabs are a view: if the surface refuses one, the conversation still works.
+  await syncTabs($, entries).catch(() => undefined)
+}
+
+const tabTitle = (view: Chat, count: number) => `${view.contact} · ${view.title || 'conversation'}${count > 0 ? ` (${count})` : ''}`
+
+// One tab per conversation open in this session (the newest MAX_TABS). Tabs for conversations that closed
+// or moved away go; the plain "wire" panel stays only while there is no conversation.
+async function syncTabs($: EngineInterface, entries: readonly FeedEntry[]): Promise<void> {
+  const live = liveRefs(entries).slice(-MAX_TABS)
+  const have = await read($, tabs)
+  const counts = await read($, unread)
+  const open = new Set((await $.ui.panes()).map(pane => pane.id))
+  const now = Date.now()
+  const next: Record<string, string> = {}
+
+  for (const ref of live) {
+    const id = tabIdOf(ref)
+    next[id] = ref
+
+    if (!open.has(id)) {
+      await $.ui.open({ id, title: tabTitle(chat(entries, ref, now), counts[id] ?? 0), rows: 22 })
+    }
+
+    await $.ui.scroll({ in: id, to: 'end' }).catch(() => undefined)
   }
 
-  await $.ui.scroll({ in: PANE, to: 'end' }).catch(() => undefined)
+  for (const [id] of Object.entries(have)) {
+    if (next[id] === undefined && open.has(id)) {
+      await $.ui.close({ id }).catch(() => undefined)
+    }
+  }
+
+  await update($, tabs, () => next)
+
+  if (live.length > 0 && open.has(PANE)) {
+    await $.ui.close({ id: PANE }).catch(() => undefined)
+  }
+}
+
+// The conversation the person is looking at: the shown tab, else the one last acted on.
+async function shownRef($: EngineInterface): Promise<string | null> {
+  const map = await read($, tabs)
+  const shown = (await $.ui.panes()).find(pane => pane.isShown && map[pane.id] !== undefined)
+
+  return shown === undefined ? await read($, focus) : (map[shown.id] ?? null)
+}
+
+// A message for a tab that is not shown: count it in the tab's title.
+async function markUnread($: EngineInterface, ref: string): Promise<void> {
+  const id = tabIdOf(ref)
+  const pane = (await $.ui.panes()).find(one => one.id === id)
+
+  if (pane === undefined || pane.isShown) {
+    return
+  }
+
+  const counts = await update($, unread, all => ({ ...all, [id]: (all[id] ?? 0) + 1 }))
+  await $.ui.open({ id, title: tabTitle(chat(await read($, feed), ref, Date.now()), counts[id] ?? 0) })
 }
 
 // Sends the person's own words to the conversation in focus. Resolves to why it failed, or null.
-async function send($: EngineInterface, words: string): Promise<string | null> {
+async function send($: EngineInterface, words: string, target?: string | null): Promise<string | null> {
   const { client, env } = await wire($)
-  const to = await read($, focus)
+  const to = target === undefined ? await shownRef($) : target
   const sent = await $.process.run(
     ['node', client, 'send', '--as', 'human', '--typed', ...(to === null ? [] : ['--to', to])],
     { env, stdin: words },
@@ -398,7 +496,7 @@ async function send($: EngineInterface, words: string): Promise<string | null> {
 }
 
 // The panel's text box: Enter sends, and the box is drawn empty again.
-async function say($: EngineInterface, value: string): Promise<void> {
+async function say($: EngineInterface, value: string, ref: string | null): Promise<void> {
   void noteActivity($).catch(() => undefined)
   // A leading ">" is the prompt box's shortcut; typed here out of habit, it is not part of the message.
   const words = value.trim().replace(/^>\s*/, '')
@@ -407,7 +505,7 @@ async function say($: EngineInterface, value: string): Promise<void> {
     return
   }
 
-  const why = await send($, words)
+  const why = await send($, words, ref)
 
   if (why !== null) {
     $.ui.toast(`Not sent: ${why.slice(0, 160)}`)
@@ -434,7 +532,7 @@ async function act($: EngineInterface, args: readonly string[], done: string): P
 }
 
 async function handle($: EngineInterface, raw: string): Promise<void> {
-  let ev: { kind?: string; line?: string; from?: string; name?: string; text?: string; contact?: string; state?: string | null; listening?: boolean }
+  let ev: { kind?: string; line?: string; ref?: string; from?: string; name?: string; text?: string; contact?: string; state?: string | null; listening?: boolean }
 
   try {
     ev = JSON.parse(raw)
@@ -459,6 +557,10 @@ async function handle($: EngineInterface, raw: string): Promise<void> {
   if (ev.kind === 'acked' || typeof ev.line !== 'string' || ev.line === '') {
     // Delivery news only changes the ticks in the panel.
     return
+  }
+
+  if (ev.kind === 'msg' && typeof ev.ref === 'string') {
+    await markUnread($, ev.ref)
   }
 
   if (ev.kind === 'msg' && ev.from === 'agent') {
@@ -554,12 +656,14 @@ export const register: Register = on => {
     })
     ensureListening($)
     void watchPresence($).catch(() => undefined)
-    await $.tool.register({
+    await $.tool
+      .register({
       name: 'panel',
       description:
         'Read the wire panel as your user sees it: the conversation in focus, its messages and notices. Read-only; it shows the same data as `wire log`. Optional input: ref ("<contact>/<conversation>") to read another conversation.',
       inputSchema: { type: 'object', properties: { ref: { type: 'string' } } },
-    })
+      })
+      .catch(() => undefined)
 
     return started
   })
@@ -590,8 +694,14 @@ export const register: Register = on => {
 
     const listed = await $.process.run(['node', client, 'ls'], { env })
     await refresh($)
-    // /wire means the person wants to chat: the panel takes the keyboard, its text box first (Esc returns).
-    const opened = await $.ui.open({ id: PANE, title: 'wire', rows: 22, focus: true })
+    // /wire means the person wants to chat: the conversation's tab takes the keyboard, its text box first
+    // (Esc returns). With no conversation yet, the plain "wire" panel opens instead.
+    const target = await read($, focus)
+    const tabId = target === null ? null : tabIdOf(target)
+    const isTab = tabId !== null && (await read($, tabs))[tabId] !== undefined
+    const opened = isTab
+      ? await $.ui.open({ id: tabId, title: tabTitle(chat(await read($, feed), target, Date.now()), 0), rows: 22, focus: true })
+      : await $.ui.open({ id: PANE, title: 'wire', rows: 22, focus: true })
     const text = (listed.stdout || listed.stderr).trim()
     parts.push(text === '' ? 'No wire contacts yet.' : text)
 
@@ -696,9 +806,24 @@ export const register: Register = on => {
     }
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
+    // Each conversation's tab draws that conversation; the plain "wire" panel draws the one last acted on.
+    const map = await read($, tabs)
+    const to = e.requestId === PANE ? await read($, focus) : (map[e.requestId] ?? null)
+
+    if (e.requestId !== PANE && to === null) {
+      return next(e)
+    }
+
     const { Box, Button, Input, Text } = $.ui.resolve(e)
-    const to = await read($, focus)
+
+    if (e.requestId !== PANE && ((await read($, unread))[e.requestId] ?? 0) > 0) {
+      // Drawn means looked at: the tab's unread count goes.
+      const id = e.requestId
+      await update($, unread, all => ({ ...all, [id]: 0 }))
+      void $.ui.open({ id, title: tabTitle(chat(await read($, feed), to, Date.now()), 0) }).catch(() => undefined)
+    }
+
     const now = await $.clock.now()
     const view = chat(await read($, feed), to, now)
     const field = await read($, draft)
@@ -878,7 +1003,7 @@ export const register: Register = on => {
               placeholder={`Message ${view.contact}`}
               submitLabel="send"
               onSubmit={value => {
-                void say($, value)
+                void say($, value, to)
               }}
             />
           </Box>
