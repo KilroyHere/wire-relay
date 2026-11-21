@@ -496,6 +496,10 @@ async function send($: EngineInterface, words: string, target?: string | null): 
 }
 
 // The panel's text box: Enter sends, and the box is drawn empty again.
+// The last thing the panel sent, to drop a repeat of the same text within a few seconds (a double Enter,
+// or a box that was not yet cleared): three identical "done" messages arrived within four seconds once.
+let lastSaid = { text: '', at: 0 }
+
 async function say($: EngineInterface, value: string, ref: string | null): Promise<void> {
   void noteActivity($).catch(() => undefined)
   // A leading ">" is the prompt box's shortcut; typed here out of habit, it is not part of the message.
@@ -505,9 +509,17 @@ async function say($: EngineInterface, value: string, ref: string | null): Promi
     return
   }
 
+  const now = await $.clock.now()
+
+  if (words === lastSaid.text && now - lastSaid.at < 5000) {
+    return
+  }
+
+  lastSaid = { text: words, at: now }
   const why = await send($, words, ref)
 
   if (why !== null) {
+    lastSaid = { text: '', at: 0 }
     $.ui.toast(`Not sent: ${why.slice(0, 160)}`)
 
     return

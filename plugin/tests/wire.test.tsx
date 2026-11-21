@@ -92,6 +92,10 @@ test('the panel shows the conversation in focus and its text box sends as the pe
   await ui.input({ key: 'say-0', text: '> on my way' })
   await settle()
 
+  // The same text again within seconds (a double Enter) is not sent twice.
+  await ui.input({ key: 'say-1', text: 'on my way' })
+  await settle()
+
   const sends = runs.filter(one => one.argv.includes('send'))
   expect(sends).toHaveLength(1)
   expect(sends[0]?.argv).toEqual(['node', '/plugin/client/wire.mjs', 'send', '--as', 'human', '--typed', '--to', REF])
