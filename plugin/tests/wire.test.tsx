@@ -70,7 +70,11 @@ test('the panel shows the conversation in focus and its text box sends as the pe
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
-    expect((await ui.find({ type: 'Text', text: /alt · "testing"/ }))?.text).toBe('alt · "testing"')
+    // The header: who, and what about.
+    expect(await ui.find({ type: 'Text', text: /^alt$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^testing$/ })).toBeDefined()
+    // Notices are in plain words, without ids.
+    expect(await ui.find({ type: 'Text', text: /^You started this conversation$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /lunch at 1\?/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^alt's Claude$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^You$/ })).toBeDefined()

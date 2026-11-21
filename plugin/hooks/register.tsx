@@ -50,12 +50,47 @@ type Wire = { client: string; env: Record<string, string> }
 
 // One row of the panel.
 type Item =
-  | { type: 'said'; who: string; text: string; isMine: boolean }
-  | { type: 'notice'; text: string }
+  | { type: 'said'; who: string; text: string; isMine: boolean; isAgent: boolean }
+  | { type: 'notice'; text: string; isWarning?: true }
   | { type: 'lobby'; text: string; ref: string }
   | { type: 'verify'; text: string; contact: string }
 
-type Chat = { header: string; contact: string; items: Item[] }
+type Chat = { header: string; contact: string; title: string; items: Item[] }
+
+// A notice in plain words (the log's own lines carry ids and are for the transcript).
+function plain(one: FeedEntry): Item | null {
+  const who = one.contact ?? 'They'
+
+  if (one.kind === 'local') {
+    if (one.line.includes('you opened')) {
+      return { type: 'notice', text: 'You started this conversation' }
+    }
+
+    return one.line.includes('attached') ? { type: 'notice', text: 'This conversation is now in this session' } : null
+  }
+
+  if (one.kind === 'closed') {
+    if (one.line.includes('closed by you')) {
+      return { type: 'notice', text: 'You closed this conversation' }
+    }
+
+    return { type: 'notice', text: one.line.includes('not listening') ? 'Closed while you were away' : `${who} closed this conversation` }
+  }
+
+  if (one.kind === 'moved') {
+    return { type: 'notice', text: 'Moved to another of your sessions' }
+  }
+
+  if (one.kind === 'verified') {
+    return { type: 'notice', text: `You verified ${who} ✓` }
+  }
+
+  if (one.kind === 'revoked') {
+    return { type: 'notice', text: `The pairing with ${who} has ended` }
+  }
+
+  return one.kind === 'warn' ? { type: 'notice', text: one.line, isWarning: true } : null
+}
 
 // Whether this session has a wire identity; decides which note the system prompt carries.
 let isSetUp = false
@@ -142,12 +177,13 @@ function chat(entries: readonly FeedEntry[], to: string | null): Chat {
           who: one.from === 'agent' ? `${name}'s Claude` : name,
           text: one.text,
           isMine: false,
+          isAgent: one.from === 'agent',
         })
       } else if (one.ref !== undefined && !elsewhere.has(one.ref)) {
         elsewhere.add(one.ref)
         items.push({
           type: 'notice',
-          text: `New messages in ${one.ref} "${one.title ?? ''}". To switch: /wire ${one.ref}`,
+          text: `New messages in "${one.title ?? one.ref}". To switch: /wire ${one.ref}`,
         })
       }
     } else if (one.kind === 'sent' && one.text !== undefined) {
@@ -157,6 +193,7 @@ function chat(entries: readonly FeedEntry[], to: string | null): Chat {
           who: one.from === 'human' ? 'You' : 'Your Claude',
           text: one.text,
           isMine: true,
+          isAgent: one.from !== 'human',
         })
       }
     } else if (one.kind === 'lobby' && one.ref !== undefined) {
@@ -171,27 +208,26 @@ function chat(entries: readonly FeedEntry[], to: string | null): Chat {
       if (!verified.has(one.contact) && lastJoin.get(one.contact) === index) {
         items.push({
           type: 'verify',
-          text: `${one.contact} is paired with you but not verified. Safety code: ${one.code ?? '?'}. Compare it with them on a call or by text.`,
+          text: `${one.contact} is not verified yet. Compare this safety code with them on a call or by text:  ${one.code ?? '?'}`,
           contact: one.contact,
         })
       }
-    } else if (one.kind === 'local' || one.kind === 'closed' || one.kind === 'moved') {
-      if (here || one.kind !== 'local') {
-        items.push({ type: 'notice', text: one.line })
-      }
     } else if (one.kind !== 'msg' && one.kind !== 'sent') {
-      items.push({ type: 'notice', text: one.line })
+      // Notices about one conversation show only in that conversation; the rest (a pairing ended) always.
+      const notice = one.ref === undefined || here ? plain(one) : null
+
+      if (notice !== null) {
+        items.push(notice)
+      }
     }
   })
 
   const contact = to === null ? '' : (to.split('/')[0] ?? '')
 
   return {
-    header:
-      to === null
-        ? 'No conversation in focus. Ask Claude to open one, or take one from the lobby.'
-        : `${contact} · "${title}"`,
+    header: to === null ? 'No conversation yet' : `${contact} · "${title}"`,
     contact,
+    title,
     items,
   }
 }
@@ -495,9 +531,10 @@ export const register: Register = on => {
       )
     }
 
-    // The newest rows that fit, so the text box under them stays in view.
-    const columns = Math.max(20, e.props.bodyColumns)
-    let room = Math.max(4, e.props.scroll.bodyRows - 4)
+    // The newest rows that fit, so the text box under them stays in view. A bubble costs its text, its
+    // border and, when the speaker changes, a name.
+    const columns = Math.max(20, e.props.bodyColumns - 8)
+    let room = Math.max(6, e.props.scroll.bodyRows - 6)
     const shown: Item[] = []
 
     for (let index = view.items.length - 1; index >= 0 && room > 0; index -= 1) {
@@ -507,71 +544,96 @@ export const register: Register = on => {
         break
       }
 
-      room -= item.type === 'said' ? 1 + rowsOf(item.text, columns) : rowsOf(item.text, columns) + (item.type === 'notice' ? 0 : 1)
+      room -= rowsOf(item.text, columns) + (item.type === 'notice' ? 1 : 3)
       shown.unshift(item)
     }
 
     return (
-      <Box flexDirection="column">
-        <Text dimColor>{view.header}</Text>
-        {shown.length === 0 && <Text dimColor>No messages yet.</Text>}
-        {shown.map(item => {
-          if (item.type === 'said') {
+      <Box flexDirection="column" height="100%" paddingX={1}>
+        <Box flexDirection="column" paddingBottom={1}>
+          <Text weight="semibold">{to === null ? 'wire' : view.contact}</Text>
+          <Text size="caption" dimColor>
+            {to === null ? 'No conversation yet' : view.title}
+          </Text>
+        </Box>
+        <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" gap={1}>
+          {shown.length === 0 && (
+            <Box alignSelf="center">
+              <Text size="caption" dimColor>
+                {to === null
+                  ? 'Ask Claude to open a conversation, or take one from the lobby.'
+                  : 'No messages yet. Say hello below.'}
+              </Text>
+            </Box>
+          )}
+          {shown.map((item, index) => {
+            if (item.type === 'said') {
+              // Yours on the right, theirs on the left; a Claude's bubble has the accent outline.
+              const before = shown[index - 1]
+              const isNewSpeaker = before === undefined || before.type !== 'said' || before.who !== item.who
+              const side = item.isMine ? 'flex-end' : 'flex-start'
+
+              return (
+                <Box flexDirection="column" alignItems={side}>
+                  {isNewSpeaker && (
+                    <Text size="caption" dimColor>
+                      {item.who}
+                    </Text>
+                  )}
+                  <Box
+                    borderStyle="round"
+                    borderColor={item.isAgent ? 'claude' : item.isMine ? 'suggestion' : 'subtle'}
+                    paddingX={1}
+                    marginLeft={item.isMine ? 4 : 0}
+                    marginRight={item.isMine ? 0 : 4}
+                  >
+                    <Text>{item.text}</Text>
+                  </Box>
+                </Box>
+              )
+            }
+
+            if (item.type === 'lobby' || item.type === 'verify') {
+              const isLobby = item.type === 'lobby'
+              const target = item.type === 'lobby' ? item.ref : item.contact
+
+              return (
+                <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1} gap={1}>
+                  <Text>{item.text}</Text>
+                  <Button
+                    key={`${isLobby ? 'take' : 'verify'}-${target}`}
+                    variant="primary"
+                    label={isLobby ? 'Take it here' : 'The codes match'}
+                    onPress={() => {
+                      void (isLobby
+                        ? act($, ['take', target], `you took ${target} into this session`)
+                        : act($, ['verify', target, '--confirmed'], `you verified ${target}`))
+                    }}
+                  />
+                </Box>
+              )
+            }
+
             return (
-              <Box flexDirection="column">
-                <Text bold color={item.isMine ? 'suggestion' : 'claude'}>
-                  {item.who}
+              <Box alignSelf="center">
+                <Text size="caption" dimColor={item.isWarning !== true} color={item.isWarning === true ? 'warning' : undefined}>
+                  {item.text}
                 </Text>
-                <Text>{item.text}</Text>
               </Box>
             )
-          }
-
-          if (item.type === 'lobby') {
-            const ref = item.ref
-
-            return (
-              <Box flexDirection="column">
-                <Text color="warning">{item.text}</Text>
-                <Button
-                  key={`take-${ref}`}
-                  label="Take it here"
-                  onPress={() => {
-                    void act($, ['take', ref], `you took ${ref} into this session`)
-                  }}
-                />
-              </Box>
-            )
-          }
-
-          if (item.type === 'verify') {
-            const contact = item.contact
-
-            return (
-              <Box flexDirection="column">
-                <Text color="warning">{item.text}</Text>
-                <Button
-                  key={`verify-${contact}`}
-                  label="The codes match"
-                  onPress={() => {
-                    void act($, ['verify', contact, '--confirmed'], `you verified ${contact}`)
-                  }}
-                />
-              </Box>
-            )
-          }
-
-          return <Text dimColor>{item.text}</Text>
-        })}
+          })}
+        </Box>
         {to !== null && (
-          <Input
-            key={`say-${field}`}
-            placeholder={`Message ${view.contact}`}
-            submitLabel="send"
-            onSubmit={value => {
-              void say($, value)
-            }}
-          />
+          <Box paddingTop={1}>
+            <Input
+              key={`say-${field}`}
+              placeholder={`Message ${view.contact}`}
+              submitLabel="send"
+              onSubmit={value => {
+                void say($, value)
+              }}
+            />
+          </Box>
         )}
       </Box>
     )
