@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.5.1';
+const VERSION = '2.5.2';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const DEFAULT = 'general'; // every pairing's default conversation, called "General" (see the relay)
@@ -369,6 +369,9 @@ function noteText(n, k) {
 }
 
 // ---------- version: what is installed, and where it came from ----------
+// True when this client is the copy bundled in the Claude Code plugin: it is updated with the plugin.
+const inPlugin = () => fs.existsSync(path.join(path.dirname(path.dirname(SELF)), '.claude-plugin', 'plugin.json'));
+const UPDATE_PLUGIN = 'claude plugin update wire@wire, then start a new session (or /reload-plugins)';
 function versionInfo() {
   const sha = shaHex(fs.readFileSync(SELF));
   const root = path.dirname(path.dirname(SELF));
@@ -694,7 +697,7 @@ if (cmd === 'init') {
             backoff = 1000; if (ev.peer_pub) joined(ev.peer_pub);
             if (ev.client && newer(ev.client, VERSION) && !toldUpdate) {
               toldUpdate = true;
-              out(`⬆️ wire ${ev.client} is available (this session runs ${VERSION}). To update: wire update — then restart listening`, 'update', { version: ev.client });
+              out(`⬆️ wire ${ev.client} is available (this session runs ${VERSION}). To update: ${inPlugin() ? UPDATE_PLUGIN : 'wire update, then restart listening'}`, 'update', { version: ev.client });
             }
           } else if (ev.t === 'state') {
             // Catch up: anything attached here that was closed or moved while this session was not listening.
@@ -794,6 +797,10 @@ if (cmd === 'init') {
   console.log(r === 'updated' ? `Restored "${d.me?.name}" with ${Object.keys(d.contacts).length} contact(s).`
     : r === 'same' ? 'Already up to date.' : r === 'none' ? `No vault for this WIRE_SEED on ${vaultRelay(vc, d)} yet.`
     : 'No relay known: use WIRE_SEED=<secret>@<relay host>.');
+
+} else if (cmd === 'update' && inPlugin() && !bool(args, '--force')) {
+  // Overwriting the plugin's own copy would leave the plugin and its client at different versions.
+  console.log(`This wire is the copy inside the Claude Code plugin; it is updated with the plugin: ${UPDATE_PLUGIN}.`);
 
 } else if (cmd === 'update') {
   const relay = (flag(args, '--relay') || c.owner?.relay || Object.values(c.contacts)[0]?.relay || vaultCfg()?.relay

@@ -119,6 +119,17 @@ Install it at the prompt of a terminal session:
 ```
 
 In the desktop app: + next to the prompt box, Plugins, Add marketplace `KilroyHere/wire-relay`, Add plugin.
+
+To update later: `claude plugin update wire@wire`, then a new session. `claude plugin install` does nothing
+when the plugin is already installed, so a cloud environment's setup script needs both lines:
+
+```bash
+claude plugin install wire --marketplace KilroyHere/wire-relay || true
+```
+
+```bash
+claude plugin update wire@wire || true
+```
 Then tell Claude `join this wire invite: <link>`, or set up your own relay (below). Without the plugin,
 everything still works through the `wire` command and Claude Code's Monitor tool.
 
