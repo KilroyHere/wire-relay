@@ -206,6 +206,7 @@ wire take|attach <ref> [--move]        attach a conversation here (--move: from 
 wire send --to <contact>[/<conv>] [--as agent|human] <text>
 wire note <ref> [text] [--goal ..] [--branch ..] [--done ..] [--next ..] [--open ..]
 wire clear <ref>                       delete a conversation's waiting messages and note
+wire rename <ref> "<topic>"            rename a topic for both sides (the default keeps "General")
 wire close <ref>                       end a topic (the default conversation cannot be closed)
 wire revoke|leave <contact>            end a pairing on both sides; deletes this machine's log of it
 wire presence on|off                   share active / away with your contacts (off by default)

@@ -107,6 +107,13 @@ ok "old session gets 📴"         "📴"                       "$(cat "$T/u1.ou
 P send --to "uday/$C1" "after takeover" >/dev/null; wait_for u3.out "after takeover"
 ok "new session gets messages"  "after takeover"          "$(cat "$T/u3.out")"
 
+echo "rename"
+ok "a topic can be renamed"     "renamed priya/$C2 to \"deploy v2\"" "$(SESS=u-s2 U rename "priya/$C2" "deploy v2")"
+wait_for p1.out "renamed this conversation"
+ok "the other side is told"     "Uday renamed this conversation \"deploy v2\"" "$(cat "$T/p1.out")"
+ok "and lists the new name"     "deploy v2"               "$(P ls uday)"
+ok "the default keeps its name" "keeps its name"          "$(U rename priya "x" 2>&1)"
+
 echo "session log"
 LOGGED=$(SESS=u-s3 U log)
 ok "log keeps what arrived"     "Claude \(Priya\) \[agent\]: after takeover" "$LOGGED"

@@ -21,6 +21,7 @@
 //   POST /p/<pair>/convs   {}
 //   POST /p/<pair>/close   {conv}                 (not the default conversation)
 //   POST /p/<pair>/clear   {conv}                 delete its waiting messages and note
+//   POST /p/<pair>/rename  {conv, title}          a new encrypted title (not the default conversation)
 //   POST /p/<pair>/presence {state}               'active' | 'away' | null (off); kept in memory only
 //   POST /p/<pair>/revoke  {}
 //   vault (x-wire-vault-token; an encrypted copy of a person's identity + contacts, so new sessions can restore it):
@@ -247,6 +248,7 @@ export class PairV2 extends DurableObject {
       case 'convs': return this.convs(side, other);
       case 'close': return this.close(other, b);
       case 'clear': return this.clear(b);
+      case 'rename': return this.rename(other, b);
       case 'revoke': return this.revoke(other);
     }
     return json({ error: 'unknown action' }, 404);
@@ -404,6 +406,16 @@ export class PairV2 extends DurableObject {
         has_note: !!c.note, my_session: c['att_' + side], peer_attached: !!c['att_' + other], pending: c.pending,
       })),
     });
+  }
+
+  rename(other, b) {
+    const c = this.conv(b.conv || '');
+    if (!c || c.closed) return json({ error: 'no such conversation' }, 404);
+    if (c.id === DEFAULT) return json({ error: 'the default conversation keeps its name' }, 409);
+    if (typeof b.title !== 'string' || !b.title || b.title.length > MAX_META) return json({ error: 'bad title' }, 400);
+    this.sql.exec(`UPDATE conv SET title = ?, last = ? WHERE id = ?`, b.title, Date.now(), c.id);
+    this.push(other, { t: 'renamed', conv: c.id, title: b.title });
+    return json({ ok: true });
   }
 
   clear(b) {
