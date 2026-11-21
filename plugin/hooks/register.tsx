@@ -300,7 +300,8 @@ async function send($: EngineInterface, words: string): Promise<string | null> {
 
 // The panel's text box: Enter sends, and the box is drawn empty again.
 async function say($: EngineInterface, value: string): Promise<void> {
-  const words = value.trim()
+  // A leading ">" is the prompt box's shortcut; typed here out of habit, it is not part of the message.
+  const words = value.trim().replace(/^>\s*/, '')
 
   if (words === '') {
     return

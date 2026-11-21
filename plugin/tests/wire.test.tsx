@@ -85,7 +85,7 @@ test('the panel shows the conversation in focus and its text box sends as the pe
   }
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.input({ key: 'say-0', text: 'on my way' })
+  await ui.input({ key: 'say-0', text: '> on my way' })
   await settle()
 
   const sends = runs.filter(one => one.argv.includes('send'))
