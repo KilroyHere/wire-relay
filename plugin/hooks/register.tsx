@@ -26,8 +26,9 @@ const showAll = atom({ plugin: 'wire', key: 'showAll' } as const, false)
 const peers = atom({ plugin: 'wire', key: 'peers' } as const, {}, { shape: 'peers-1' })
 // One panel per conversation in this session: Claude Code draws them as tabs. Panel id -> conversation ref.
 const tabs = atom({ plugin: 'wire', key: 'tabs' } as const, {}, { shape: 'tabs-1' })
-// Messages that arrived in a tab while another was shown.
-const unread = atom({ plugin: 'wire', key: 'unread' } as const, {}, { shape: 'unread-1' })
+// Messages that arrived in a tab while another was shown. Kept in the module, not in state, because drawing a
+// tab clears its count and drawing may not write state.
+const unread = new Map<string, number>()
 const MAX_TABS = 6
 
 // A panel id for a conversation: letters, digits, '-' and '_' only, so the ref is hashed.
@@ -184,6 +185,7 @@ async function noteActivity($: EngineInterface): Promise<void> {
 async function watchPresence($: EngineInterface): Promise<void> {
   for (;;) {
     await $.clock.sleep(30_000)
+    await syncTabs($, await read($, feed)).catch(() => undefined)
 
     if (sharedState === 'active' && ((await $.clock.now()) - lastActive > 120_000 || !(await isPaneUp($)))) {
       await share($, 'away')
@@ -425,8 +427,9 @@ const tabTitle = (view: Chat, count: number) => `${view.contact} · ${view.title
 async function syncTabs($: EngineInterface, entries: readonly FeedEntry[]): Promise<void> {
   const live = liveRefs(entries).slice(-MAX_TABS)
   const have = await read($, tabs)
-  const counts = await read($, unread)
-  const open = new Set((await $.ui.panes()).map(pane => pane.id))
+  const panes = await $.ui.panes()
+  const open = new Set(panes.map(pane => pane.id))
+  const shown = new Set(panes.filter(pane => pane.isShown).map(pane => pane.id))
   const now = Date.now()
   const next: Record<string, string> = {}
 
@@ -434,9 +437,12 @@ async function syncTabs($: EngineInterface, entries: readonly FeedEntry[]): Prom
     const id = tabIdOf(ref)
     next[id] = ref
 
-    if (!open.has(id)) {
-      await $.ui.open({ id, title: tabTitle(chat(entries, ref, now), counts[id] ?? 0), rows: 22 })
+    if (shown.has(id)) {
+      unread.delete(id)
     }
+
+    // Opening an open panel only retitles it: this keeps each tab's unread count current.
+    await $.ui.open({ id, title: tabTitle(chat(entries, ref, now), unread.get(id) ?? 0), rows: 22 })
 
     await $.ui.scroll({ in: id, to: 'end' }).catch(() => undefined)
   }
@@ -471,8 +477,8 @@ async function markUnread($: EngineInterface, ref: string): Promise<void> {
     return
   }
 
-  const counts = await update($, unread, all => ({ ...all, [id]: (all[id] ?? 0) + 1 }))
-  await $.ui.open({ id, title: tabTitle(chat(await read($, feed), ref, Date.now()), counts[id] ?? 0) })
+  unread.set(id, (unread.get(id) ?? 0) + 1)
+  await $.ui.open({ id, title: tabTitle(chat(await read($, feed), ref, Date.now()), unread.get(id) ?? 0) })
 }
 
 // Sends the person's own words to the conversation in focus. Resolves to why it failed, or null.
@@ -829,12 +835,8 @@ export const register: Register = on => {
 
     const { Box, Button, Input, Text } = $.ui.resolve(e)
 
-    if (e.requestId !== PANE && ((await read($, unread))[e.requestId] ?? 0) > 0) {
-      // Drawn means looked at: the tab's unread count goes.
-      const id = e.requestId
-      await update($, unread, all => ({ ...all, [id]: 0 }))
-      void $.ui.open({ id, title: tabTitle(chat(await read($, feed), to, Date.now()), 0) }).catch(() => undefined)
-    }
+    // Drawn means looked at: the tab's unread count goes (its title catches up on the next refresh).
+    unread.delete(e.requestId)
 
     const now = await $.clock.now()
     const view = chat(await read($, feed), to, now)

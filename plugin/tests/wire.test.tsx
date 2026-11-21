@@ -254,3 +254,55 @@ test('the panel tool lets Claude read what the panel shows', async ($, on) => {
   expect(String(read.result)).toContain('lunch at 1?')
   expect(String(read.result)).toContain('[lobby]')
 })
+
+test('each tab sends to its own conversation', async ($, on) => {
+  const TOPIC = 'alt/Rk2PqZ8a'
+  const runs: Runs = []
+  const log = [
+    LOG,
+    JSON.stringify({ at: 7, kind: 'local', contact: 'alt', ref: TOPIC, title: 'release', line: '↗ opened' }),
+    JSON.stringify({ at: 8, kind: 'msg', contact: 'alt', ref: TOPIC, title: 'release', from: 'human', name: 'alt', text: 'notes?', line: '📨 alt: notes?' }),
+  ].join('\n')
+  const opened: string[] = []
+  on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
+  on('process.run', (_, e) => {
+    runs.push({ argv: e.argv, stdin: e.init?.stdin })
+
+    return { value: ran(0, e.argv.includes('log') ? log : 'sent') }
+  })
+  on('ui.panes', () => ({ value: opened.map(id => ({ id, title: id, isShown: id === opened.at(-1), isFocused: false, isPlaced: true })) }))
+  on('ui.open', (_, e) => {
+    if (!opened.includes(e.id)) {
+      opened.push(e.id)
+    }
+
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.scroll', () => ({}))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: 10 * 60_000 }))
+  on('command.run', () => ({}))
+
+  await $.command.run({ command: 'wire', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } })
+
+  // Two conversations open in the session: two tabs.
+  const tabIds = opened.filter(id => id.startsWith('c-'))
+  expect(tabIds).toHaveLength(2)
+
+  for (const [index, id] of tabIds.entries()) {
+    const ui = await $.ui.mount({ ...PANE, requestId: id, surface: 'desktop' })
+    // The text box is keyed by a counter that moves on after each send.
+    const box = await ui.find({ type: 'Input' })
+    await ui.input({ key: String(box?.key), text: `hello tab ${index}` })
+    await settle()
+    await ui.unmount()
+  }
+
+  const sends = runs.filter(one => one.argv.includes('send'))
+  const targets = sends.map(one => one.argv.at(-1))
+  expect(new Set(targets)).toEqual(new Set([REF, TOPIC]))
+  expect(sends.map(one => one.stdin)).toEqual(['hello tab 0', 'hello tab 1'])
+})

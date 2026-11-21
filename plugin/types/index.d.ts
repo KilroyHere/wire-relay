@@ -33,7 +33,6 @@ declare module 'claude-code' {
       showAll: boolean
       peers: Shaped<Record<string, Peer>>
       tabs: Shaped<Record<string, string>>
-      unread: Shaped<Record<string, number>>
     }
   }
 }
