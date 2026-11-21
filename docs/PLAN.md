@@ -48,11 +48,11 @@ Known problems, from the live test and from looking at the panel:
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | Every pairing has one default conversation. Another one exists only for a separate topic, created with `wire open --new`. | Removes the "which conversation" ambiguity. |
+| D1 | Every pairing has one default conversation. Another one exists only for a separate topic, created with `wire open --new`. The default conversation attaches to the session the user last typed in; if they have typed in none yet, the user is asked. | Removes the "which conversation" ambiguity. "First session to listen" would be arbitrary, and can be a background session. |
 | D2 | A conversation is never moved between the user's sessions without asking. | Moving changes which session answers. |
 | D3 | A Claude always names the conversation it sends to (`--to`). Only the person's own typing goes to the conversation the panel shows. | No implicit target for agents. |
 | D4 | A turn started by the other Claude has fixed text written by the plugin. The peer's words go in the turn's context, marked untrusted. | What the model reads as an instruction never contains peer text. |
-| D5 | During such a turn, a short fixed allowlist runs without asking (`wire ls`, `wire send`, `wire note`, `pwd`, `ls`); everything else asks the user. The working directory is offered as a status field so it needs no shell. | Limits what a peer's message can make the session do. |
+| D5 | During such a turn, a short fixed allowlist runs without asking (`wire ls`, `wire send`, `wire note`); everything else asks the user. The working directory is offered as a status field, so no shell command is needed for it. | Limits what a peer's message can make the session do. `ls` is left out because file names can leak project details. |
 | D6 | After 4 Claude-to-Claude exchanges with no human message, the plugin stops starting turns and asks the user. The count is shown. | Loop and cost guard. |
 | D7 | Senders are shown under the name the receiver gave the contact. `join` asks for a name and never picks one. | No one can pose as someone else. |
 | D8 | The plugin's source repository is shown by `wire --version`, `wire whoami` and the invite page; the marketplace is renamed so the plugin shows as `wire@kilroyhere`. | People can check what they installed. |
@@ -91,9 +91,12 @@ then by a user in the desktop app with a screenshot.
 
 ## 5. Open questions
 
-- Q1. Where does the default conversation (D1) attach when the user has several sessions open: the first one
-  that listens, or the one the user last typed in?
-- Q2. Is `ls` in the D5 allowlist safe enough, given it reveals file names to the other side?
+- Q1. *Settled in D1:* the session the user last typed in, else ask. Open detail: the user's sessions can run
+  on different machines, so "last typed in" has to be known across them. The plain way is for each session to
+  tell the relay when its user types, as one more opaque session handle per pairing side (the relay already
+  stores which handle holds each conversation). Is that acceptable, given the aim of storing as little as
+  possible on the relay?
+- Q2. *Settled in D5:* `ls` is left out.
 - Q3. Presence (D9): what counts as "watching"? The panel open, or the person typed in the last few minutes?
 - Q4. Should a contact's own chosen name be shown at all, beside the receiver's label, to help tell two
   people apart?
@@ -116,11 +119,12 @@ then by a user in the desktop app with a screenshot.
 
 ## 8. Order
 
-1. D4, D5, D6 (untrusted turns, allowlist, loop guard). Both Claudes rank this first with D1.
-2. D1, D2, D3 (one default conversation, explicit targets).
-3. D14, then the panel fixes in section 4, checked with the viewer.
-4. D7, D8 (names, plugin identity).
-5. D9, D10 (presence, delivery), then D11, D12 (handoffs, approvals), D13.
+1. D4, D5, D6 (untrusted turns, allowlist, loop guard): the safety boundary, so it comes first.
+2. D14 (the panel viewer script), so every change after it can be checked in the panel as it lands.
+3. D1, D2, D3 (one default conversation, explicit targets).
+4. The panel fixes in section 4, checked with the viewer.
+5. D7, D8 (names, plugin identity).
+6. D9, D10 (presence, delivery), then D11, D12 (handoffs, approvals), D13.
 
 Each step ships when its tests pass, the other Claude has reviewed the change on the wire, and both users
 have run it once.
