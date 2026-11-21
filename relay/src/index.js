@@ -25,6 +25,9 @@
 //   vault (x-wire-vault-token; an encrypted copy of a person's identity + contacts, so new sessions can restore it):
 //   POST /vault/<id>/get   {}
 //   POST /vault/<id>/put   {data, if_version?}   creating one needs the owner token or a pairing's member headers
+//   POST /vault/<id>/delete {}                   removes it
+// Rate limits: per pairing side, SEND_PER_MINUTE messages a minute; per IP address, claims and vault writes
+// (see LIMITS), counted in memory by the Limiter object, never stored.
 import { DurableObject } from 'cloudflare:workers';
 import CLIENT from '../../plugin/client/wire.mjs'; // bundled as text (see "rules" in wrangler.jsonc)
 
@@ -45,6 +48,19 @@ const MAX_PENDING = 2000;         // per pairing
 const MAX_STREAMS = 8;            // per side
 const MAX_OPEN_CONVS = 200;       // per pairing
 const MAX_VAULT = 256 * 1024;     // one encrypted identity blob
+const SEND_PER_MINUTE = 60;       // per pairing side
+const HOUR = 3600000;
+const LIMITS = { claim: { limit: 20, window: HOUR }, vault: { limit: 120, window: HOUR } };
+
+// Counts a request against a per-IP limit; false when over it.
+async function allowed(req, env, bucket) {
+  const ip = req.headers.get('cf-connecting-ip') || 'local';
+  const { limit, window } = LIMITS[bucket];
+  const r = await env.LIMITER.get(env.LIMITER.idFromName(`${bucket}:${ip}`))
+    .fetch(new Request('https://do/hit', { method: 'POST', body: JSON.stringify({ limit, window }) }));
+  return r.status === 200;
+}
+const tooMany = (what) => json({ error: `rate limited: too many ${what} from this address, try again later` }, 429);
 const ID = /^[A-Za-z0-9_-]{6,64}$/;
 // Every pairing has this conversation. It has no title (clients call it "General"), cannot be closed, and
 // attaches itself to a person's session when only one of their sessions is listening.
@@ -83,10 +99,14 @@ export default {
       const stub = env.PAIR.get(env.PAIR.idFromName(b.pair));
       return stub.fetch(new Request('https://do/init', { method: 'POST', body: JSON.stringify(b) }));
     }
-    const vm = url.pathname.match(/^\/vault\/([A-Za-z0-9_-]{24,64})\/(get|put)$/);
-    if (vm && req.method === 'POST') return vault(req, env, vm[1], vm[2]);
+    const vm = url.pathname.match(/^\/vault\/([A-Za-z0-9_-]{24,64})\/(get|put|delete)$/);
+    if (vm && req.method === 'POST') {
+      if (vm[2] !== 'get' && !(await allowed(req, env, 'vault'))) return tooMany('vault writes');
+      return vault(req, env, vm[1], vm[2]);
+    }
     const m = url.pathname.match(/^\/p\/([A-Za-z0-9_-]{6,64})\/([a-z]+)$/);
     if (!m) return json({ error: 'not found' }, 404);
+    if (m[2] === 'claim' && !(await allowed(req, env, 'claim'))) return tooMany('invite claims');
     return env.PAIR.get(env.PAIR.idFromName(m[1])).fetch(req);
   },
 };
@@ -124,12 +144,25 @@ export class Vault extends DurableObject {
     const row = await this.ctx.storage.get('vault'); // reading a missing key stores nothing
     if (row && row.tok !== (await sha(b.token || ''))) return json({ error: 'unauthorized' }, 401);
     if (action === 'get') return row ? json({ v: row.v, data: row.data }) : json({ error: 'no vault' }, 404);
+    if (action === 'delete') { await this.ctx.storage.deleteAll(); return json({ ok: true, existed: !!row }); }
     if (typeof b.data !== 'string' || !b.data || b.data.length > MAX_VAULT) return json({ error: 'bad data' }, 400);
     if (!row && !b.creator_ok) return json({ error: 'create not allowed' }, 428);
     if (row && b.if_version != null && Number(b.if_version) !== row.v) return json({ error: 'version', v: row.v }, 409);
     const v = (row ? row.v : 0) + 1;
     await this.ctx.storage.put('vault', { tok: row ? row.tok : await sha(b.token), v, data: b.data, updated: Date.now() });
     return json({ v });
+  }
+}
+
+// Sliding-window counters per (bucket, IP), in memory only: a restart forgets them, which is fine for a limit.
+export class Limiter extends DurableObject {
+  async fetch(req) {
+    const { limit, window } = (await readJson(req)) || {};
+    const now = Date.now();
+    this.hits = (this.hits || []).filter((t) => t > now - window);
+    if (this.hits.length >= limit) return json({ ok: false }, 429);
+    this.hits.push(now);
+    return json({ ok: true });
   }
 }
 
@@ -308,6 +341,10 @@ export class PairV2 extends DurableObject {
     if (!c || c.closed) return json({ error: 'no such conversation' }, 404);
     if (typeof b.body !== 'string' || !b.body || b.body.length > MAX_BODY) return json({ error: 'bad body' }, 400);
     if (this.sql.exec(`SELECT COUNT(*) AS n FROM msg`).one().n >= MAX_PENDING) return json({ error: 'mailbox full' }, 429);
+    const sent = (this.sent ||= { a: [], b: [] }), t0 = Date.now();
+    sent[side] = sent[side].filter((t) => t > t0 - 60000);
+    if (sent[side].length >= SEND_PER_MINUTE) return json({ error: 'rate limited: more than 60 messages a minute, try again shortly' }, 429);
+    sent[side].push(t0);
     const now = Date.now();
     const { id } = this.sql.exec(`INSERT INTO msg (conv, sender, body, ts) VALUES (?, ?, ?, ?) RETURNING id`, c.id, side, b.body, now).one();
     this.sql.exec(`UPDATE conv SET last = ? WHERE id = ?`, now, c.id);

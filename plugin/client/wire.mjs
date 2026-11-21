@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.3.0';
+const VERSION = '2.4.0';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const DEFAULT = 'general'; // every pairing's default conversation, called "General" (see the relay)
@@ -78,7 +78,9 @@ const HELP = `wire ${VERSION}
   wire focus <ref>                       make an attached conversation the one a view (the plugin's panel) shows
   wire send --to <contact>[/<conv>] [--as agent|human] <text>
   wire note <ref> [text]                 read or set the conversation's summary note
-  wire close <ref> | wire revoke <contact>
+  wire close <ref>                       end a topic conversation
+  wire revoke|leave <contact>            end a pairing on both sides; deletes this machine's log of it
+  wire forget                            delete your vault from the relay
   wire listen [--json]                   event stream for this session (use with Monitor)
   wire log [-n <count>] [--json]         what this session saw and sent, most recent last
   wire backup | wire restore [--force]   push / pull your encrypted vault now (WIRE_SEED=<secret>@<relay host>)
@@ -188,6 +190,7 @@ function http(url, headers, body) {
 }
 function call(k, action, body) {
   const r = http(`${k.relay}/p/${k.pair}/${action}`, memberHeaders(k), body);
+  if (r.status === 429) die(`relay: ${r.data.error || 'rate limited, try again shortly'}`);
   if (r.status >= 400) die(`relay: ${r.data.error || 'HTTP ' + r.status}`);
   return r.data;
 }
@@ -333,6 +336,22 @@ function logEvent(handle, entry) {
     fs.appendFileSync(f, JSON.stringify({ at: Date.now(), ...entry, line: String(entry.line).slice(0, 4000) }) + '\n', { mode: 0o600 });
     if (fs.statSync(f).size > 512 * 1024) fs.writeFileSync(f, fs.readFileSync(f, 'utf8').trimEnd().split('\n').slice(-300).join('\n') + '\n');
   } catch {}
+}
+// Removes a contact from every session's log and memory on this machine (after revoke / leave).
+function forgetLocally(key) {
+  const dir = path.join(DIR, 'sessions');
+  let names = []; try { names = fs.readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      if (name.endsWith('.log')) {
+        const kept = fs.readFileSync(file, 'utf8').split('\n').filter((l) => { try { return l && JSON.parse(l).contact !== key; } catch { return false; } });
+        fs.writeFileSync(file, kept.length ? kept.join('\n') + '\n' : '', { mode: 0o600 });
+      } else if (name.endsWith('.json')) {
+        const m = JSON.parse(fs.readFileSync(file, 'utf8')); delete m[key]; fs.writeFileSync(file, JSON.stringify(m));
+      }
+    } catch {}
+  }
 }
 const readLog = (handle, n) => { try { return fs.readFileSync(logFile(handle), 'utf8').trimEnd().split('\n').slice(-n).map((l) => JSON.parse(l)); } catch { return []; } };
 
@@ -537,11 +556,21 @@ if (cmd === 'init') {
   logEvent(sessionHandle(needMe(c)), { kind: 'closed', contact: key, ref: `${key}/${conv}`, line: `🚪 [${key}/${conv}] closed by you` });
   console.log(`closed ${key}/${conv}`);
 
-} else if (cmd === 'revoke') {
-  const [key, k] = contactOf(c, args[0] || die('usage: wire revoke <contact>'));
+} else if (cmd === 'revoke' || cmd === 'leave') {
+  const [key, k] = contactOf(c, args[0] || die(`usage: wire ${cmd} <contact>`));
   const r = http(`${k.relay}/p/${k.pair}/revoke`, memberHeaders(k), {});
   if (r.status >= 400 && r.data.error !== 'no such pairing') die(`relay: ${r.data.error || 'HTTP ' + r.status}`);
-  commit((x) => { delete x.contacts[key]; }); console.log(`revoked ${key}: pairing deleted on the relay and locally`);
+  commit((x) => { delete x.contacts[key]; });
+  forgetLocally(key);
+  console.log(`Ended the pairing with ${key} on both sides. The relay deleted everything it held for it, including messages still waiting, and this machine's log of it is deleted. ${k.label}'s own copy of past messages stays with them.`);
+
+} else if (cmd === 'forget') {
+  const vc = vaultCfg() || die('No vault configured (WIRE_SEED is not set), so there is nothing to forget.');
+  const relay = vaultRelay(vc, c) || die('No relay known for your vault.');
+  const r = http(`${relay}/vault/${vc.id}/delete`, { 'x-wire-vault-token': vc.token }, {});
+  if (r.status >= 400) die(`relay: ${r.data.error || 'HTTP ' + r.status}`);
+  setVstate({ v: 0, dirty: true });
+  console.log(`${r.data.existed ? 'Your vault is deleted from the relay.' : 'There was no vault on the relay.'} Your identity and contacts stay on this machine; remove WIRE_SEED from your environment or the next change uploads a new vault. Your contacts' copies of past messages are not affected.`);
 
 } else if (cmd === 'listen') {
   // One stdout line per event, for Claude Code's Monitor tool. Follows all contacts; picks up new ones.

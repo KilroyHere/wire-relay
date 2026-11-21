@@ -11,12 +11,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "PAIR", "class_name": "PairV2" },
-      { "name": "VAULT", "class_name": "Vault" }
+      { "name": "VAULT", "class_name": "Vault" },
+      { "name": "LIMITER", "class_name": "Limiter" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Pair"] },
     { "tag": "v2", "renamed_classes": [{ "from": "Pair", "to": "PairV2" }] },
-    { "tag": "v3", "new_sqlite_classes": ["Vault"] }
+    { "tag": "v3", "new_sqlite_classes": ["Vault"] },
+    { "tag": "v4", "new_sqlite_classes": ["Limiter"] }
   ]
 }

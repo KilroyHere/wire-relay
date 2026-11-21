@@ -148,6 +148,16 @@ ok "the other drops its notice" "taken in another of your sessions" "$(cat "$T/l
 SESS=l-s2 L send --to uday "hello from lee" >/dev/null; sleep 1; SESS=u-s1 U take lee >/dev/null 2>&1; wait_for u1.out "hello from lee"
 ok "a self-chosen name that differs is shown" "lee \(calls themselves Lee Ann\)" "$(cat "$T/u1.out")"
 
+echo "rate limit"
+OUT=$(for i in $(seq 1 62); do SESS=l-s2 L send --to uday "burst $i" 2>&1 | tail -1; done)
+ok "more than 60 messages a minute are refused" "rate limited" "$OUT"
+
+echo "leave and forget"
+ok "leave ends a pairing from the invited side" "Ended the pairing with uday" "$(SESS=l-s2 L leave uday 2>&1)"
+ok "and clears this machine's log of it" "^$" "$(SESS=l-s2 L log | grep -i 'lee\|uday' || true)"
+ok "forget deletes the vault" "vault is deleted" "$(WIRE_SEED=$SEED U forget 2>&1)"
+ok "after which none is found" "No vault" "$(WIRE_DIR=$T/new3 WIRE_SEED=$SEED node plugin/client/wire.mjs restore 2>&1)"
+
 echo "version"
 ok "wire version shows the checksum" "$(sha256sum plugin/client/wire.mjs | cut -d' ' -f1)" "$(node plugin/client/wire.mjs version)"
 
