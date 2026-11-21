@@ -65,16 +65,28 @@ Known problems, from the live test and from looking at the panel:
 
 ## 4. Panel
 
+What both viewers showed (terminal drawing; the desktop drawing is still unseen):
+
+| Width | Seen |
+|---|---|
+| 200 columns (Main) | Docked right. Bubbles wider than the panel, right borders cut off; own bubbles double-indented. |
+| 120 columns (alt2) | Docked right, about 45 columns. Bubbles fit with borders intact but nearly touch the edge. |
+| 80 x 30 (alt2) | Full-width overlay. Header takes 4 rows, a long message shows about 4 lines, **the text box is not visible, so the person cannot type**. |
+| All | The text box shows only its placeholder, with no visible field. No timestamps. The status line reads `wire: wire ▸ main/…` (the engine already prefixes the plugin's name). |
+
 Fixes, in order:
 
-1. Bubbles take at most the panel's width less a margin and wrap inside it.
-2. The person's own bubbles align right without extra indent.
-3. The text box is drawn as a field (outline or background), pinned to the bottom.
-4. Long messages collapse to a few lines with a "show more" button.
-5. A time on the first message of each run, and on any message more than 10 minutes after the last.
-6. The status from D9 and D10 in the header and under the last message.
+1. **The text box is always visible**: it is laid out first and the messages get whatever room is left, so on
+   a short terminal fewer messages show, never no text box. It is drawn as a field (outline or background).
+2. Bubbles take at most the panel's width less a 2-column margin and wrap inside it.
+3. The person's own bubbles align right without extra indent.
+4. The header takes one row (contact and topic on one line) where the panel is short.
+5. Long messages collapse to a few lines with a "show more" button.
+6. A time on the first message of each run, and on any message more than 10 minutes after the last.
+7. The status line text is the conversation alone (`▸ alt2 · testing`), without repeating "wire".
+8. The status from D9 and D10 in the header and under the last message.
 
-Each fix is checked with `test/panel-view.sh` at three widths (narrow, the 110-column minimum, wide) and
+Each fix is checked with `test/panel-view.sh` at 80x30, 120x40 and 200x50, and
 then by a user in the desktop app with a screenshot.
 
 ## 5. Open questions
