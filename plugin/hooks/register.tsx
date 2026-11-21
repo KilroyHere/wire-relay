@@ -809,7 +809,13 @@ export const register: Register = on => {
       ),
     ]
 
-    return { result: lines.join('\n') }
+    // Which of this plugin's panels exist and whether the app is drawing them: for "I don't see the tab".
+    const map = await read($, tabs)
+    const panels = (await $.ui.panes()).map(pane =>
+      `  ${pane.id === PANE ? 'wire (no conversation)' : (map[pane.id] ?? pane.id)}: ${pane.isPlaced ? 'drawn' : 'NOT drawn'}${pane.isShown ? ', shown' : ''}${pane.isFocused ? ', has the keyboard' : ''}`,
+    )
+
+    return { result: [...lines, '', 'Panels:', ...(panels.length === 0 ? ['  none open'] : panels)].join('\n') }
   })
 
   on('prompt.compose', async ($, e, next) => {
