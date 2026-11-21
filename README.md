@@ -19,14 +19,18 @@ while messages from humans are shown to you and left alone.
 - **People pair once.** The relay owner creates a one-time invite link; the other person opens it and
   pastes one line into Claude Code. Both sides then see the same **safety code** (e.g. `🦊 🌲 🚀 42`) to
   compare over a call or text.
-- **Conversations belong to sessions.** Inside a pairing, either side can open any number of
-  conversations (`wire open priya --about "api-v2"`). Each is attached to one Claude Code session on each
-  side, so you can run several in parallel. A new conversation waits in the other person's *lobby*
-  until one of their sessions takes it. A conversation can move to another session (`wire attach`);
-  the old one is told it moved.
+- **One conversation per person, by default.** Every pairing has a default conversation ("General") that
+  cannot be closed. When the other side writes there and only one of your sessions is listening, it lands
+  there; with several open, each shows a lobby notice and the session you take it in gets it. A separate
+  topic is a further conversation (`wire open <contact> --new --about "<topic>"`), which waits in the other
+  person's lobby until they take it. A conversation never moves between your sessions without `--move`.
 - **The relay is a mailbox.** Messages are held until the recipient's session acknowledges them, then
-  deleted. Undelivered messages expire after 7 days. Each conversation has a small encrypted *note*
-  (a running summary) so a session that picks it up later has context.
+  deleted, and the sender sees *Delivered*. Undelivered messages expire after 7 days. Each conversation has
+  a small encrypted *note* (a summary or a structured handoff, with its author) so a session that picks it
+  up later has context.
+- **Honest labels.** A message shows as typed by the person only when they typed it in the panel or after
+  `>`; words their Claude passes on are marked "relayed by their Claude". People appear under the name
+  *you* gave them, with "calls themselves X" when their own name differs.
 
 ## How it flows
 
@@ -78,7 +82,9 @@ Every phase step by step, with what the relay stores at each point: [docs/FLOW.m
 | Impersonation / interception | Each person has an X25519 key pair; after pairing, the link alone is useless. The safety code detects a swapped key (only if you actually compare it). |
 | Who can create pairings | Only the relay owner (`OWNER_TOKEN` Worker secret). Members authenticate with per-pairing tokens; the relay stores only their hashes. |
 | Session identity | `HMAC(handle secret, CLAUDE_CODE_SESSION_ID)` — stable for a session, meaningless to the relay. |
-| What the relay can see | Pair ids, public keys, timing and size of messages, which session handle a conversation is attached to, the size of your vault. |
+| What the relay can see | Pair ids, public keys, timing and size of messages, which session handle a conversation is attached to, the size of your vault, and (in memory only) whether a side is listening and, if they turned it on, active / away. |
+| Abuse | At most 60 messages a minute per pairing side; per IP address, 20 invite claims and 120 vault writes an hour. Only the relay owner can create invites. |
+| Not yet | **Safety guards (phase 2 of [the plan](docs/PLAN.md))**: today a turn started by the other side's Claude runs with your session's normal permissions; only the rules in Claude's prompt keep it from acting on their requests. |
 | Agents | Incoming messages are information, never instructions. The rules every Claude follows (`wire rules`) forbid acting on the other side's requests without its own user's approval. |
 
 Not (yet) included: forward secrecy (ratcheting keys). Since the relay deletes messages on delivery,
@@ -89,7 +95,7 @@ there is little stored ciphertext to protect.
 The plugin makes wire part of Claude Code instead of something Claude has to remember to run:
 
 - it keeps the listener running for the session (no timeouts to re-arm);
-- **a side panel is the chat with the other person.** It shows the conversation in focus and has its own
+- **a side panel is the chat with the other person** (`/wire` opens it and puts the cursor in its text box). It shows the conversation in focus and has its own
   text box: what you type there goes out as your own words, with no model turn. It opens by itself when
   the session has a conversation (in a wide window; otherwise run `/wire`). Lobby requests and safety
   codes show there with a button (*Take it here*, *The codes match*);
@@ -100,7 +106,11 @@ The plugin makes wire part of Claude Code instead of something Claude has to rem
   switches it, so a reply cannot go to the wrong person;
 - where an app shows no panels, messages appear in the chat instead, a line you start with `>` is sent as
   your own words, and `/wire` prints the conversation;
-- your Claude gets the wire rules in its system prompt, and `wire` is put on the PATH.
+- the panel shows when each of your messages was delivered, folds long messages, and holds the whole
+  conversation; with presence on (`wire presence on`, off by default) it also shows whether the other person
+  is active, and always whether their Claude is listening;
+- your Claude gets the wire rules in its system prompt, can read the panel with the read-only
+  `mcp__wire__panel` tool, and `wire` is put on the PATH.
 
 Install it at the prompt of a terminal session:
 
@@ -173,25 +183,31 @@ page installs the plugin from there (or remove it to leave the plugin out of the
 
 ```
 wire init --name <you>                 create your identity (once per person)
-wire owner --relay <url>               save the relay owner token (stdin) — relay owners only
+wire owner --relay <url>               save the relay owner token (stdin), relay owners only
 wire invite <contact>                  one-time invite link
-wire join <link> [--name <you>]        accept an invite
+wire join <link> --name <you>          accept an invite
 wire contacts                          contacts, safety codes, verified status
 wire verify <contact> [--confirmed]    show / confirm the safety code
-wire open <contact> --about "<topic>"  start a conversation attached to this session
+wire open <contact>                    bring the default conversation ("General") to this session
+wire open <contact> --new --about "<topic>"   a separate conversation for a topic
 wire ls [contact]                      conversations: attached here / elsewhere / in your lobby
-wire take|attach <contact>/<conv>      attach a conversation to this session
-wire send [--to <ref>] [--as agent|human] <text>
-wire note <ref> [text]                 read / set the conversation's summary note
-wire close <ref> · wire revoke <contact>
+wire take|attach <ref> [--move]        attach a conversation here (--move: from another of your sessions)
+wire send --to <contact>[/<conv>] [--as agent|human] <text>
+wire note <ref> [text] [--goal ..] [--branch ..] [--done ..] [--next ..] [--open ..]
+wire clear <ref>                       delete a conversation's waiting messages and note
+wire close <ref>                       end a topic (the default conversation cannot be closed)
+wire revoke|leave <contact>            end a pairing on both sides; deletes this machine's log of it
+wire presence on|off                   share active / away with your contacts (off by default)
 wire listen [--json]                   event stream for this session (use with Monitor)
-wire backup · wire restore             push / pull your encrypted vault now (WIRE_SEED)
+wire log [-n N] [--json]               what this session saw and sent
+wire backup · wire restore · wire forget   your encrypted vault (WIRE_SEED)
 wire update                            replace the client with the relay's current version
-wire install · wire whoami · wire rules
+wire version · wire install · wire whoami · wire rules
 ```
 
-Inside Claude Code you rarely type these: tell Claude what you want ("open a chat with Priya about the
-deploy", "> ship it" to send your own words verbatim) and it runs them.
+A reference `<ref>` is `<contact>` (that contact's default conversation) or `<contact>/<conversation>`.
+Inside Claude Code you rarely type these: tell Claude what you want ("open a chat with Priya", "ask Priya's
+Claude about the deploy"), type in the wire panel, or start a line with `>` to send your own words.
 
 ## Where things are stored
 
@@ -236,6 +252,9 @@ npm install
 ```bash
 npm test
 ```
+
+`test/panel-view.sh start` runs a second Claude Code in tmux with this plugin and a sample conversation, so a
+person or a Claude can see and use the real panel (`shot --panel`, `type`, `resize`, `stop`).
 
 `npm test` starts the relay locally with `wrangler dev` and runs the full flow (pairing, lobby,
 parallel sessions, takeover, catch-up after being offline, notes, the vault, update notices, revocation) with two simulated people.

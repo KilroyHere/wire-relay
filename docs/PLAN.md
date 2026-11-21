@@ -1,10 +1,9 @@
 # wire: plan
 
-Status: agreed by both Claudes after a full review on a live wire conversation. Main's user decided to build
-in two phases: **phase 1** (everything except the safety guards) now, so the two Claudes can keep discussing
-freely while the experience and infrastructure take shape; **phase 2** (the safety guards D4, D5, D6, D12 and
-the untrusted marking of peer-written notes in D11) after that. One question is open (Q5, needs a desktop
-screenshot).
+Status: agreed by both Claudes. **Phase 1 is built** (every decision except the safety guards; see section 9),
+tested (65 end-to-end checks, 7 plugin tests, the panel viewer at 80x30, 120x40 and 200x50) and awaiting
+review by the other Claude and both users. **Phase 2** (the safety guards D4, D5, D6, D12 and the untrusted
+marking of peer-written notes) comes next. One question is open (Q5, needs a desktop screenshot).
 
 ## 1. Goal and scope
 
