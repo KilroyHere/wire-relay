@@ -114,16 +114,17 @@ everything still works through the `wire` command and Claude Code's Monitor tool
 
 ## Joining someone's wire (most people)
 
-Open the invite link you were sent and paste what it shows into a Claude Code session. It is roughly:
+Open the invite link you were sent. The page asks for your name and gives you one message to copy and
+paste into a Claude Code session. Claude then:
 
-```bash
-mkdir -p ~/.wire && curl -fsSL https://<relay>/v/<version>/wire.mjs -o ~/.wire/wire.mjs && echo "<sha256>  $HOME/.wire/wire.mjs" | sha256sum -c - && node ~/.wire/wire.mjs join "<invite link>" --name "<your name>"
-```
+1. downloads the `wire` client from the relay and checks its checksum;
+2. joins the chat and tells you the **safety code** to compare with the person who invited you;
+3. installs the wire plugin (`claude plugin install wire --marketplace <owner>/<repo>`), which adds the
+   chat panel. Run `/reload-plugins` or start a new session to see it; until then Claude listens with the
+   Monitor tool, and steps aside once the plugin is listening.
 
-`join` installs `wire` on your PATH, prints your safety code and the rules Claude follows, and Claude
-starts listening (`wire listen` under the Monitor tool). In a **cloud session with limited network
-access**, approve the relay's host once when Claude asks. On macOS use `shasum -a 256 -c -` in place of
-`sha256sum -c -`.
+In a **cloud session with limited network access**, approve the relay's host once when Claude asks. On macOS
+the checksum step needs `shasum -a 256 -c -` in place of `sha256sum -c -`.
 
 Cross-check the checksum against this repository's releases if you don't control the relay: the relay
 serves both the file and its checksum, so a compromised relay could change both.
@@ -165,6 +166,8 @@ wire invite priya
 ```
 
 Invite links contain the relay address, so people on different relays can still talk to each other.
+If you deploy your own copy, set `PLUGIN_SOURCE` in `wrangler.jsonc` to your repository, so your invite
+page installs the plugin from there (or remove it to leave the plugin out of the invite).
 
 ## Commands
 

@@ -30,6 +30,7 @@ ok "serves the client"          "const VERSION"          "$(curl -s "$R/wire.mjs
 SHA=$(curl -s "$R/wire.mjs" | sha256sum | cut -d' ' -f1)
 ok "checksum matches"           "$SHA"                    "$(curl -s "$R/wire.mjs.sha256")"
 ok "invite page embeds it"      "$SHA"                    "$(curl -s "$R/i")"
+ok "its one paste installs the plugin too" "claude plugin install wire --marketplace '\+plugin" "$(curl -s "$R/i")"
 
 echo "step 1: owner token"
 U init --name Uday >/dev/null
@@ -105,6 +106,10 @@ WIRE_SEED=$SEED U invite carol >/dev/null 2>&1
 ok "a contact added in one session reaches another" "carol" "$(WIRE_DIR=$T/new WIRE_SEED=$SEED node plugin/client/wire.mjs contacts 2>/dev/null)"
 ok "a paired member can keep a vault" "vault updated"     "$(WIRE_SEED="$RUN-priya@$R" P backup 2>&1)"
 ok "the relay holds only ciphertext" "^$"                 "$(curl -s -X POST -H "x-wire-vault-token: x" -d '{}' "$R/vault/$(printf 'A%.0s' $(seq 32))/get" | grep -i 'uday\|priya')"
+
+echo "one listener per session"
+( SESS=u-lock U listen --json > "$T/lock.out" 2>/dev/null & ); sleep 1
+ok "a hand-started listener steps aside for the plugin's" "already listening" "$(WIRE_DIR=$T/uday CLAUDE_CODE_SESSION_ID=u-lock timeout 5 node "$ROOT/plugin/client/wire.mjs" listen 2>/dev/null <<<'' || true)"
 
 echo "security"
 PAIR=$(node -e "console.log(require('$T/uday/contacts.json').contacts.priya.pair)")

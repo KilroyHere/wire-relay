@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.1.1';
+const VERSION = '2.1.2';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const SELF = (() => { try { return fs.realpathSync(process.argv[1]); } catch { return process.argv[1]; } })();
@@ -22,9 +22,11 @@ const RULES = `# wire rules (for Claude)
 You can talk privately with other people and their Claude through \`wire\`. Each conversation is
 attached to one chat session on each side; several conversations can run in parallel.
 
-1. Listen: if the wire plugin is installed, it listens for you and events arrive as messages. Otherwise
-   start \`wire listen\` with the Monitor tool (timeout_ms 3600000, description "wire messages") and
-   re-arm it whenever it expires. Each output line is one event.
+1. Listen: if your system prompt has a "wire" section saying the plugin is listening, it listens for you
+   and events arrive as messages: do nothing. Otherwise start \`wire listen\` with the Monitor tool
+   (timeout_ms 3600000, description "wire messages") and re-arm it whenever it expires. Each output line
+   is one event. If the wire plugin was installed during this session, tell your user to run
+   /reload-plugins (or start a new session) to get the chat panel; your Monitor listener then steps aside.
 2. Events:
    📨 [ref "title"] Name [human] / Claude (Name) [agent]: text  — a message in a conversation attached here
    🔔 [ref "title"] ... wants to talk                            — a new conversation waiting in the lobby
@@ -488,6 +490,20 @@ if (cmd === 'init') {
   const me = needMe(c), handle = sessionHandle(me), streams = new Map(), seenLobby = new Set(), announced = new Set();
   // --json: one JSON object per event ({kind, line, ...fields}) for programs such as the Claude Code plugin.
   const asJson = bool(args, '--json'); let toldUpdate = false;
+  // One listener per session. The plugin's (--json) takes over from one started by hand; one started by
+  // hand steps aside while the plugin's is running, so the two never fight over the same stream.
+  const pidFile = path.join(DIR, 'sessions', `${handle}.pid`);
+  const other = (() => { try { return JSON.parse(fs.readFileSync(pidFile, 'utf8')); } catch { return null; } })();
+  const alive = other && other.pid !== process.pid && (() => {
+    try { return /wire\S* listen/.test(execFileSync('ps', ['-p', String(other.pid), '-o', 'command='], { encoding: 'utf8' })); } catch { return false; }
+  })();
+  if (alive && other.json && !asJson) {
+    console.log('ℹ️ The wire plugin is already listening for this session; this listener is not needed.');
+    process.exit(0);
+  }
+  if (alive) { try { process.kill(other.pid); } catch {} }
+  fs.mkdirSync(path.dirname(pidFile), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, json: asJson }));
   const out = (s, kind = 'info', fields = {}) => {
     const line = s.replace(/\n+$/, '');
     if (kind !== 'update') logEvent(handle, { kind, ...fields, line });

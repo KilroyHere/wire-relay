@@ -5,6 +5,9 @@
   "compatibility_date": "2025-09-01",
   // The client is bundled into the Worker as text so the relay can serve it (GET /wire.mjs).
   "rules": [{ "type": "Text", "globs": ["**/client/*.mjs"], "fallthrough": false }],
+  // The GitHub repository the invite page tells a new person's Claude to install the plugin from.
+  // If you deploy your own copy, point this at your repository (or remove it to skip the plugin).
+  "vars": { "PLUGIN_SOURCE": "KilroyHere/wire-relay" },
   "durable_objects": {
     "bindings": [
       { "name": "PAIR", "class_name": "PairV2" },

@@ -6,7 +6,8 @@
 // encrypted client-side), hashes of member tokens, and the two public keys.
 //
 // Plain HTTPS only (no WebSockets) so it works through egress proxies.
-//   GET  /i#...                       invite page (the secret stays in the URL fragment, never sent here)
+//   GET  /i#...                       invite page (the secret stays in the URL fragment, never sent here).
+//                                     With PLUGIN_SOURCE set (owner/repo), its one paste also installs the plugin.
 //   GET  /wire.mjs, /v/<ver>/wire.mjs  the client this relay was deployed with; /wire.mjs.sha256 its checksum
 //   POST /pairs                       (x-wire-owner)            create a pairing (owner only)
 //   POST /p/<pair>/claim              {invite, pub_b, tok_b}    invitee claims the pairing, once
@@ -67,7 +68,8 @@ export default {
       return new Response(CLIENT, { headers: { 'content-type': 'text/javascript; charset=utf-8', 'x-wire-sha256': await clientSha256() } });
     if (url.pathname === '/wire.mjs.sha256') return new Response(`${await clientSha256()}  wire.mjs\n`);
     if (url.pathname === '/i')
-      return new Response(INVITE_HTML.replaceAll('__VER__', CLIENT_VERSION).replaceAll('__SHA__', await clientSha256()),
+      return new Response(INVITE_HTML.replaceAll('__VER__', CLIENT_VERSION).replaceAll('__SHA__', await clientSha256())
+        .replaceAll('__PLUGIN__', /^[\w.-]+\/[\w.-]+$/.test(env.PLUGIN_SOURCE || '') ? env.PLUGIN_SOURCE : ''),
         { headers: { 'content-type': 'text/html; charset=utf-8', 'referrer-policy': 'no-referrer' } });
     if (url.pathname === '/pairs' && req.method === 'POST') {
       const tok = req.headers.get('x-wire-owner') || '';
@@ -341,27 +343,46 @@ const INVITE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 :root{--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--card:#fff;--line:#e7e5e4;--accent:#c2410c}
 @media (prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--card:#292524;--line:#44403c;--accent:#fb923c}}
 *{box-sizing:border-box}body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif;margin:0;padding:40px 16px}
-main{max-width:680px;margin:0 auto}h1{font-size:26px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
-p,li{color:var(--muted)}code{font:13px/1.5 ui-monospace,monospace}
-.box{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 14px 14px 14px}
-.box pre{margin:0;font:13px/1.55 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
-button{margin-top:10px;font:600 14px system-ui;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--fg);color:var(--bg);cursor:pointer}
+main{max-width:640px;margin:0 auto}h1{font-size:26px;line-height:1.2;margin:0 0 6px}
+p,li,summary{color:var(--muted)}code{font:13px/1.5 ui-monospace,monospace}
+ol{padding-left:22px;margin:22px 0}ol>li{margin:0 0 18px;color:var(--fg);font-weight:600}ol>li>*{font-weight:400}
+label{display:block;color:var(--muted);margin:6px 0}
+input{width:100%;font:16px system-ui;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{margin-top:8px;font:600 15px system-ui;padding:10px 18px;border-radius:8px;border:1px solid var(--line);background:var(--fg);color:var(--bg);cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+details{margin-top:26px}pre{margin:8px 0 0;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;
+font:12.5px/1.55 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
 .bad{color:var(--accent)}</style></head><body><main>
-<h1 id="title">You're invited to a private wire chat</h1><p id="who"></p>
-<h2>Paste this into a Claude Code session</h2>
-<div class="box"><pre id="prompt"></pre><button id="copy">Copy</button></div>
-<h2>What happens</h2><ul>
-<li>Claude installs the <code>wire</code> client (version __VER__, checksum verified), joins, and starts listening.</li>
-<li>You'll both see a <b>safety code</b>. Compare it with the person who invited you (call or text) to make sure nobody intercepted this link.</li>
-<li>Messages are end-to-end encrypted. This link works <b>once</b>; its secret part never leaves your browser.</li>
-<li>In a cloud session with limited network access, Claude will ask you to allow <code id="host"></code> once.</li></ul>
+<h1 id="title">You're invited to a private chat</h1><p id="who"></p>
+<ol id="steps">
+<li>Your name<label for="name">How you'll appear to the person who invited you.</label>
+<input id="name" autocomplete="name" placeholder="Your name" maxlength="40"></li>
+<li>Copy the message<br><button id="copy" disabled>Copy</button></li>
+<li>Paste it into Claude Code<label>Claude sets everything up and tells you a short safety code. Compare it with the person
+who invited you, on a call or by text, to make sure nobody intercepted this link.</label></li>
+</ol>
+<details><summary>What the message does</summary><pre id="prompt"></pre>
+<p>It downloads the wire client from this site (version __VER__) and checks its checksum, joins the chat<span id="plug">,
+and installs the wire plugin for Claude Code from GitHub (<code>__PLUGIN__</code>), which adds the chat panel</span>.
+Messages are end-to-end encrypted. This link works once, and its secret part never leaves your browser.
+In a cloud session with limited network access, Claude asks you to allow <code id="host"></code> once.</p></details>
 </main><script>
 const f=location.hash.slice(1).split('.'), ok=f.length>=3&&f[0]&&f[1]&&f[2];
-const name=f[3]?decodeURIComponent(f[3]):'Someone', o=location.origin;
-document.getElementById('host').textContent=location.host;
-if(!ok){document.getElementById('title').textContent='This invite link is incomplete';document.getElementById('who').innerHTML='<span class="bad">Ask for the full link, including everything after the #.</span>';}
-else{document.getElementById('who').textContent=name+' invited you.';
-const cmd='mkdir -p ~/.wire && curl -fsSL '+o+'/v/__VER__/wire.mjs -o ~/.wire/wire.mjs && echo "__SHA__  '+'$HOME/.wire/wire.mjs" | sha256sum -c - && node ~/.wire/wire.mjs join "'+location.href+'" --name "<my name>"';
-document.getElementById('prompt').textContent='Join '+name+"'s wire chat. Run this (use my name in place of <my name>; ask me if you don't know it), then follow the rules it prints:\n\n"+cmd;}
-document.getElementById('copy').onclick=()=>navigator.clipboard.writeText(document.getElementById('prompt').textContent).then(()=>{const b=document.getElementById('copy');b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500)});
+const inviter=f[3]?decodeURIComponent(f[3]):'Someone', o=location.origin, plugin='__PLUGIN__';
+const $=(id)=>document.getElementById(id);
+$('host').textContent=location.host; if(!plugin)$('plug').hidden=true;
+function build(){
+  const name=$('name').value.trim().replace(/["\\\\$\`]/g,'');
+  const join='mkdir -p ~/.wire && curl -fsSL '+o+'/v/__VER__/wire.mjs -o ~/.wire/wire.mjs && echo "__SHA__  '+'$HOME/.wire/wire.mjs" | sha256sum -c - && node ~/.wire/wire.mjs join "'+location.href+'" --name "'+name+'"';
+  const add=plugin?'\\n\\nThen install the chat panel (skip it if this fails):\\n\\nclaude plugin install wire --marketplace '+plugin:'';
+  return 'Join '+inviter+"'s private wire chat for me. Run this, then follow the rules it prints:\\n\\n"+join+add;
+}
+function refresh(){ $('copy').disabled=!$('name').value.trim(); $('prompt').textContent=build(); }
+if(!ok){ $('title').textContent='This invite link is incomplete'; $('steps').hidden=true;
+  $('who').innerHTML='<span class="bad">Ask for the full link, including everything after the #.</span>'; }
+else{ $('who').textContent=inviter+' invited you. Three steps:'; $('name').addEventListener('input',refresh); refresh(); }
+$('copy').onclick=()=>{ const t=build(), b=$('copy');
+  navigator.clipboard.writeText(t).then(()=>{b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500)})
+    .catch(()=>{ $('prompt').parentElement.open=true; const r=document.createRange(); r.selectNodeContents($('prompt')); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); }); };
 </script></body></html>`;
