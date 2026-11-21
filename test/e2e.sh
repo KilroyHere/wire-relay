@@ -174,6 +174,10 @@ ok "and clears this machine's log of it" "^$" "$(SESS=l-s2 L log | grep -i 'lee\
 ok "forget deletes the vault" "vault is deleted" "$(WIRE_SEED=$SEED U forget 2>&1)"
 ok "after which none is found" "No vault" "$(WIRE_DIR=$T/new3 WIRE_SEED=$SEED node plugin/client/wire.mjs restore 2>&1)"
 
+echo "status"
+ok "status says when nothing is listening" "listener: NOT running" "$(SESS=u-none U status)"
+ok "and when the session is"    "listener: running"       "$(SESS=u-pres U status)"
+
 echo "version"
 ok "wire version shows the checksum" "$(sha256sum plugin/client/wire.mjs | cut -d' ' -f1)" "$(node plugin/client/wire.mjs version)"
 

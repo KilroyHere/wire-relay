@@ -480,6 +480,21 @@ async function handle($: EngineInterface, raw: string): Promise<void> {
   await update($, pending, list => [...list, line].slice(-50))
 }
 
+// Started once per loaded module, from whichever hook runs first: session.start does not run when the
+// module loads into a session that has already started (a plugin installed or updated mid-session).
+let isListening = false
+
+function ensureListening($: EngineInterface): void {
+  if (isListening) {
+    return
+  }
+
+  isListening = true
+  void listen($).catch(() => {
+    isListening = false
+  })
+}
+
 async function listen($: EngineInterface): Promise<void> {
   const { client, env } = await wire($)
   // Puts `wire` on the PATH for the Bash tool; harmless when it is there already.
@@ -537,7 +552,7 @@ export const register: Register = on => {
       name: 'wire',
       description: 'Open the wire chat panel; /wire <contact>/<conversation> switches conversation',
     })
-    void listen($).catch(() => undefined)
+    ensureListening($)
     void watchPresence($).catch(() => undefined)
     await $.tool.register({
       name: 'panel',
@@ -553,6 +568,20 @@ export const register: Register = on => {
     const { client, env } = await wire($)
     const parts: string[] = []
     const wanted = e.args.trim()
+    ensureListening($)
+
+    if (wanted === 'listen' || wanted === 'status') {
+      // Restarting is the listener's own business: a new one takes over this session's stream.
+      if (wanted === 'listen') {
+        isListening = false
+        ensureListening($)
+        await $.clock.sleep(3000)
+      }
+
+      const status = await $.process.run(['node', client, 'status'], { env })
+
+      return { text: (status.stdout || status.stderr).trim() }
+    }
 
     if (wanted !== '') {
       const focused = await $.process.run(['node', client, 'focus', wanted], { env })
@@ -656,6 +685,7 @@ export const register: Register = on => {
   })
 
   on('prompt.compose', async ($, e, next) => {
+    ensureListening($)
     const composed = await next(e)
 
     return {

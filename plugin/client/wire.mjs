@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '2.5.0';
+const VERSION = '2.5.1';
 const DIR = process.env.WIRE_DIR || path.join(os.homedir(), '.wire');
 const FILE = path.join(DIR, 'contacts.json');
 const DEFAULT = 'general'; // every pairing's default conversation, called "General" (see the relay)
@@ -89,6 +89,7 @@ const HELP = `wire ${VERSION}
   wire backup | wire restore [--force]   push / pull your encrypted vault now (WIRE_SEED=<secret>@<relay host>)
   wire update [--relay <url>]            replace this client with the relay's current version (checksum checked)
   wire install                           put wire on the PATH
+  wire status                            is this session listening? version, session, waiting messages
   wire version                           this client's version, checksum, and the plugin and commit it came from
   wire whoami | wire rules`;
 
@@ -438,6 +439,21 @@ if (cmd === 'init') {
   console.log(`Invite for ${label} (works once, expires in 7 days):\n\n  ${c.owner.relay}/i#${pair}.${invite}.${me.pub}.${encodeURIComponent(me.name)}\n`);
   console.log(`Send it to ${label} privately. When they join, you'll both see a safety code to compare.`);
   seedTip();
+
+} else if (cmd === 'status') {
+  // For "why isn't anything arriving?": the listener for this session, and what waits for it.
+  const me = needMe(c), handle = sessionHandle(me);
+  let lock = null; try { lock = JSON.parse(fs.readFileSync(path.join(DIR, 'sessions', `${handle}.pid`), 'utf8')); } catch {}
+  let alive = false;
+  if (lock) { try { alive = /wire\S* listen/.test(execFileSync('ps', ['-p', String(lock.pid), '-o', 'command='], { encoding: 'utf8' })); } catch {} }
+  console.log(versionText().split('\n')[0]);
+  console.log(`${me.name} · session ${handle.slice(0, 6)}… · listener: ${alive ? `running (pid ${lock.pid}, ${lock.json ? 'the plugin' : 'started by hand'})` : 'NOT running'}`);
+  for (const [key, k] of Object.entries(c.contacts)) {
+    if (!k.their_pub) continue;
+    const [r] = soft(() => convsOf(k));
+    for (const v of r?.convs || []) if (!v.closed && v.my_session === handle && v.pending) console.log(`  ${key}/${v.conv}: ${v.pending} waiting for this session`);
+  }
+  if (!alive) console.log('Nothing arrives until a listener runs: /wire listen (plugin), or wire listen under the Monitor tool.');
 
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   console.log(bool(args, '--json') ? JSON.stringify(versionInfo()) : versionText());
