@@ -64,6 +64,7 @@ const HELP = `wire ${VERSION}
   wire open <contact> --about "<topic>"  start a conversation attached to this session
   wire ls [contact]                      list conversations
   wire take|attach <ref>                 attach a conversation to this session
+  wire focus <ref>                       make an attached conversation the one a view (the plugin's panel) shows
   wire send [--to <ref>] [--as agent|human] <text>
   wire note <ref> [text]                 read or set the conversation's summary note
   wire close <ref> | wire revoke <contact>
@@ -397,7 +398,7 @@ if (cmd === 'init') {
 } else if (cmd === 'verify') {
   const me = needMe(c); const [key, k] = contactOf(c, args[0] || die('usage: wire verify <contact> [--confirmed]'));
   if (!k.their_pub) die(`${key} has not joined yet.`);
-  if (bool(args, '--confirmed')) { commit((x) => { if (x.contacts[key]) x.contacts[key].verified = true; }); console.log(`${key} marked verified ✓`); }
+  if (bool(args, '--confirmed')) { commit((x) => { if (x.contacts[key]) x.contacts[key].verified = true; }); logEvent(sessionHandle(me), { kind: 'verified', contact: key, line: `✓ you verified ${key}` }); console.log(`${key} marked verified ✓`); }
   else console.log(`Safety code with ${key}: ${safetyCode(me.pub, k.their_pub)}\nCompare it with them. If it matches: wire verify ${key} --confirmed`);
 
 } else if (cmd === 'open') {
@@ -407,7 +408,7 @@ if (cmd === 'init') {
   const conv = rand(6), pk = pairKey(me, k);
   call(k, 'open', { conv, handle: sessionHandle(me), title: seal(convKey(pk, conv), `title:${conv}`, { title: about }) });
   remember(sessionHandle(me), key, conv, about);
-  logEvent(sessionHandle(me), { kind: 'local', ref: `${key}/${conv}`, line: `↗ [${key}/${conv} "${about}"] you opened this conversation` });
+  logEvent(sessionHandle(me), { kind: 'local', contact: key, ref: `${key}/${conv}`, title: about, line: `↗ [${key}/${conv} "${about}"] you opened this conversation` });
   console.log(`Opened ${key}/${conv} "${about}" — attached to this session. ${k.label} will see it in their lobby.`);
 
 } else if (cmd === 'ls') {
@@ -435,10 +436,18 @@ if (cmd === 'init') {
   const r = call(k, 'attach', { conv, handle: sessionHandle(me) });
   const attachedTitle = r.title ? titleOf(pairKey(me, k), conv, r.title) : '?';
   remember(sessionHandle(me), key, conv, attachedTitle);
-  logEvent(sessionHandle(me), { kind: 'local', ref: `${key}/${conv}`, line: `↘ [${key}/${conv} "${attachedTitle}"] attached to this session` });
+  logEvent(sessionHandle(me), { kind: 'local', contact: key, ref: `${key}/${conv}`, title: attachedTitle, line: `↘ [${key}/${conv} "${attachedTitle}"] attached to this session` });
   console.log(`Attached ${key}/${conv} to this session.${r.moved_from_other_session ? ' (Your other session was told it moved.)' : ''}`);
   if (r.note) console.log(`Note: ${tryOpen(convKey(pairKey(me, k), conv), `note:${conv}`, r.note, { note: '(unreadable)' }).note}`);
   console.log('Waiting messages (if any) arrive through wire listen.');
+
+} else if (cmd === 'focus') {
+  const me = needMe(c); const { key, k, conv } = resolveRef(c, args[0] || die('usage: wire focus <contact>/<conv>'), { attachedHereOnly: true });
+  const v = convsOf(k).convs.find((x) => x.conv === conv);
+  if (!v || v.closed || v.my_session !== sessionHandle(me)) die(`${key}/${conv} is not attached to this session (wire attach ${key}/${conv}).`);
+  const t = titleOf(pairKey(me, k), conv, v.title);
+  logEvent(sessionHandle(me), { kind: 'local', contact: key, ref: `${key}/${conv}`, title: t, line: `→ [${key}/${conv} "${t}"] in focus` });
+  console.log(`${key}/${conv} "${t}" is in focus`);
 
 } else if (cmd === 'send') {
   const me = needMe(c), to = flag(args, '--to'), as = flag(args, '--as', 'agent');
@@ -451,7 +460,7 @@ if (cmd === 'init') {
     const body = seal(ck, `msg:${conv}`, { name: me.name, as, text: parts.length > 1 ? `(${i + 1}/${parts.length}) ${p}` : p, ts: Date.now() });
     delivered = call(k, 'send', { conv, body }).delivered_to_session;
   });
-  logEvent(sessionHandle(me), { kind: 'sent', ref: `${key}/${conv}`, line: `↗ [${key}/${conv}] ${as === 'human' ? 'you' : 'your Claude'}: ${text}` });
+  logEvent(sessionHandle(me), { kind: 'sent', contact: key, ref: `${key}/${conv}`, from: as, text, line: `↗ [${key}/${conv}] ${as === 'human' ? 'you' : 'your Claude'}: ${text}` });
   console.log(`sent to ${key}/${conv} as ${as === 'human' ? me.name : `Claude (${me.name})`}${delivered ? '' : ' — they are not listening right now; it will wait (7 days)'}`);
 
 } else if (cmd === 'note') {
@@ -462,7 +471,9 @@ if (cmd === 'init') {
 
 } else if (cmd === 'close') {
   const { key, k, conv } = resolveRef(c, args[0] || die('usage: wire close <ref>'));
-  call(k, 'close', { conv }); remember(sessionHandle(needMe(c)), key, conv, null); console.log(`closed ${key}/${conv}`);
+  call(k, 'close', { conv }); remember(sessionHandle(needMe(c)), key, conv, null);
+  logEvent(sessionHandle(needMe(c)), { kind: 'closed', contact: key, ref: `${key}/${conv}`, line: `🚪 [${key}/${conv}] closed by you` });
+  console.log(`closed ${key}/${conv}`);
 
 } else if (cmd === 'revoke') {
   const [key, k] = contactOf(c, args[0] || die('usage: wire revoke <contact>'));
@@ -479,7 +490,7 @@ if (cmd === 'init') {
   const asJson = bool(args, '--json'); let toldUpdate = false;
   const out = (s, kind = 'info', fields = {}) => {
     const line = s.replace(/\n+$/, '');
-    if (kind !== 'update') logEvent(handle, { kind, line, ...(fields.ref ? { ref: fields.ref } : {}) });
+    if (kind !== 'update') logEvent(handle, { kind, ...fields, line });
     process.stdout.write((asJson ? JSON.stringify({ kind, line, ...fields }) : line) + '\n');
   };
   const start = (key) => {
@@ -512,7 +523,7 @@ if (cmd === 'init') {
         k.their_pub = pub;
         if (kk.verified || announced.has(key)) return;
         announced.add(key);
-        out(`🤝 ${kk.label} is paired with you but NOT verified yet. Safety code: ${safetyCode(me.pub, pub)} — compare it with them, then: wire verify ${key} --confirmed`, 'joined', { contact: key });
+        out(`🤝 ${kk.label} is paired with you but NOT verified yet. Safety code: ${safetyCode(me.pub, pub)} — compare it with them, then: wire verify ${key} --confirmed`, 'joined', { contact: key, code: safetyCode(me.pub, pub) });
       };
       const feed = (d) => {
         lastData = Date.now(); buf += d; let nl;

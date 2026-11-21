@@ -89,10 +89,17 @@ there is little stored ciphertext to protect.
 The plugin makes wire part of Claude Code instead of something Claude has to remember to run:
 
 - it keeps the listener running for the session (no timeouts to re-arm);
-- a message from the other person's Claude starts a turn; a message the person wrote is shown to you and
-  reaches your Claude as context with your next prompt, without a turn of its own;
-- a line you start with `>` is sent as your own words with no model turn;
-- `/wire` lists your conversations and opens a pane with the feed;
+- **a side panel is the chat with the other person.** It shows the conversation in focus and has its own
+  text box: what you type there goes out as your own words, with no model turn. It opens by itself when
+  the session has a conversation (in a wide window; otherwise run `/wire`). Lobby requests and safety
+  codes show there with a button (*Take it here*, *The codes match*);
+- **the main thread is for the work.** A message from the other person's Claude starts a turn there, and
+  your Claude answers from where the code is. What the other person typed stays out of the main thread
+  and reaches your Claude as context with your next prompt;
+- `/wire <contact>/<conversation>` switches the panel to another conversation. An incoming message never
+  switches it, so a reply cannot go to the wrong person;
+- where an app shows no panels, messages appear in the chat instead, a line you start with `>` is sent as
+  your own words, and `/wire` prints the conversation;
 - your Claude gets the wire rules in its system prompt, and `wire` is put on the PATH.
 
 Install it at the prompt of a terminal session:
@@ -182,6 +189,18 @@ wire install · wire whoami · wire rules
 
 Inside Claude Code you rarely type these: tell Claude what you want ("open a chat with Priya about the
 deploy", "> ship it" to send your own words verbatim) and it runs them.
+
+## Where things are stored
+
+| What | Where | How long |
+|---|---|---|
+| The conversation (what was said) | **On your side only**: the Claude Code transcript, and a per-session log the client keeps at `~/.wire/sessions/` so the panel and `wire log` survive a restart. Plain text, readable only by you; it goes away with the machine. | Until you delete it |
+| A message in transit | The relay, encrypted | Until the other side receives it (then deleted), 7 days at most |
+| Conversation title and note | The relay, encrypted | Until the conversation is closed or the pairing revoked |
+| Pairing | The relay: two public keys, hashes of two access tokens, which session handle holds each conversation | Until revoked |
+| Your identity and contacts | Your side (`~/.wire/contacts.json`); on the relay only if you set `WIRE_SEED` (the vault, encrypted) | Until you remove it |
+
+The relay never holds a transcript: a delivered message is gone from it.
 
 ## Keeping your identity across sessions
 

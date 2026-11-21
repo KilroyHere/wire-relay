@@ -3,24 +3,114 @@ import { expect, test } from 'claude-code/testing'
 const ran = (exitCode: number, stdout: string, stderr = '') => ({
   exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false,
 })
-const SENT = ran(0, 'sent to alt/TtaIbvkn as Main')
-// Lets work the plugin started without awaiting (its listener) run to where it waits.
+// Lets work the plugin started without awaiting (its listener, a pressed button) run to where it waits.
 const settle = async (): Promise<void> => {
   for (let turn = 0; turn < 500; turn += 1) {
     await Promise.resolve()
   }
 }
 
-test('a line starting with > is sent as the person and starts no model turn', async ($, on) => {
-  const runs: string[] = []
+const REF = 'alt/TtaIbvkn'
+// What `wire log --json` prints: one session's conversation with "alt", and a lobby notice from "bo".
+const LOG = [
+  { at: 1, kind: 'joined', contact: 'alt', code: '🔥 🌲 🛸 ⚡ 21', line: '🤝 alt is paired with you but NOT verified yet.' },
+  { at: 2, kind: 'local', contact: 'alt', ref: REF, title: 'testing', line: '↗ [alt/TtaIbvkn "testing"] you opened this conversation' },
+  { at: 3, kind: 'msg', contact: 'alt', ref: REF, title: 'testing', from: 'human', name: 'alt', text: 'lunch at 1?', line: '📨 [alt/TtaIbvkn "testing"] alt [human]: lunch at 1?' },
+  { at: 4, kind: 'sent', contact: 'alt', ref: REF, from: 'human', text: 'yes', line: '↗ [alt/TtaIbvkn] you: yes' },
+  { at: 5, kind: 'msg', contact: 'alt', ref: REF, title: 'testing', from: 'agent', name: 'alt', text: 'ready?', line: '📨 [alt/TtaIbvkn "testing"] Claude (alt) [agent]: ready?' },
+  { at: 6, kind: 'lobby', contact: 'bo', ref: 'bo/Zz91kQpA', title: 'deploy', line: '🔔 [bo/Zz91kQpA "deploy"] bo wants to talk' },
+].map(one => JSON.stringify(one)).join('\n')
+
+const PANE = {
+  plugin: 'wire',
+  component: 'Pane',
+  requestId: 'wire',
+  props: {
+    title: 'wire',
+    isFocused: false,
+    bodyColumns: 60,
+    placement: 'dock',
+    scroll: { offset: 0, bodyRows: 40 },
+    view: {},
+  },
+} as const
+
+// The stand-ins every test needs: the client (`wire ...`), panes, and the calls that draw nothing here.
+type Runs = { argv: readonly string[]; stdin?: string }[]
+
+test('the panel shows the conversation in focus and its text box sends as the person', async ($, on) => {
+  const runs: Runs = []
   let entered = 0
   on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
   on('process.run', (_, e) => {
-    runs.push(JSON.stringify(e))
+    runs.push({ argv: e.argv, stdin: e.init?.stdin })
 
-    return { value: SENT }
+    return { value: ran(0, e.argv.includes('log') ? LOG : `sent to ${REF} as Main`) }
   })
-  on('clock.now', () => ({ value: 1 }))
+  on('ui.panes', () => ({ value: [{ id: 'wire', title: 'wire', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.scroll', () => ({}))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('command.run', () => ({}))
+  on('prompt.submit', (_, e) => {
+    entered += 1
+
+    return { text: e.text }
+  })
+
+  // /wire reads the log into the panel.
+  await $.command.run({
+    command: 'wire',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 200 },
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    expect((await ui.find({ type: 'Text', text: /alt · "testing"/ }))?.text).toBe('alt · "testing"')
+    expect(await ui.find({ type: 'Text', text: /lunch at 1\?/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^alt's Claude$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^You$/ })).toBeDefined()
+    // The lobby notice and the unverified contact each come with a button.
+    expect(await ui.find({ type: 'Button', key: 'take-bo/Zz91kQpA' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'verify-alt' })).toBeDefined()
+    await ui.unmount()
+  }
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'say-0', text: 'on my way' })
+  await settle()
+
+  const sends = runs.filter(one => one.argv.includes('send'))
+  expect(sends).toHaveLength(1)
+  expect(sends[0]?.argv).toEqual(['node', '/plugin/client/wire.mjs', 'send', '--as', 'human', '--to', REF])
+  expect(sends[0]?.stdin).toBe('on my way')
+  // No model turn for it, and a fresh, empty text box.
+  expect(entered).toBe(0)
+  expect(await ui.find({ type: 'Input', key: 'say-1' })).toBeDefined()
+
+  await ui.press({ key: 'take-bo/Zz91kQpA' })
+  await settle()
+  expect(runs.some(one => one.argv.join(' ').endsWith('take bo/Zz91kQpA'))).toBe(true)
+  await ui.unmount()
+})
+
+test('a line starting with > is sent as the person and starts no model turn', async ($, on) => {
+  const runs: Runs = []
+  let entered = 0
+  on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
+  on('process.run', (_, e) => {
+    runs.push({ argv: e.argv, stdin: e.init?.stdin })
+
+    return { value: ran(0, e.argv.includes('log') ? LOG : `sent to ${REF} as Main`) }
+  })
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'narrow' } }))
+  on('ui.scroll', () => ({}))
+  on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => {
     entered += 1
@@ -30,12 +120,10 @@ test('a line starting with > is sent as the person and starts no model turn', as
 
   await $.prompt.submit({ text: '> ship it', origin: { kind: 'composer' }, wait: false })
 
-  const sends = runs.filter(one => one.includes('"send"'))
-
+  const sends = runs.filter(one => one.argv.includes('send'))
   expect(entered).toBe(0)
-  expect(sends.length).toBe(1)
-  expect(sends[0]).toContain('"--as","human"')
-  expect(sends[0]).toContain('ship it')
+  expect(sends).toHaveLength(1)
+  expect(sends[0]?.stdin).toBe('ship it')
 })
 
 test('an ordinary prompt goes to the model untouched', async ($, on) => {
@@ -54,9 +142,7 @@ test('an ordinary prompt goes to the model untouched', async ($, on) => {
 test('with no conversation to send to, a > line is an ordinary prompt', async ($, on) => {
   let entered = 0
   on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
-  on('process.run', () => ({
-    value: ran(1, '', 'No conversation is attached to this session.'),
-  }))
+  on('process.run', () => ({ value: ran(1, '', 'No conversation is attached to this session.') }))
   on('prompt.submit', (_, e) => {
     entered += 1
 
@@ -68,26 +154,27 @@ test('with no conversation to send to, a > line is an ordinary prompt', async ($
   expect(entered).toBe(1)
 })
 
-test('a message from the other Claude starts a turn; one from the person only waits as context', async ($, on) => {
+test('a message from the other Claude starts a turn; one from the person stays out of the main thread', async ($, on) => {
   const prompts: { text: string; context?: readonly string[] }[] = []
   const logged: string[] = []
   const events = [
-    { kind: 'msg', from: 'agent', ref: 'alt/TtaIbvkn', line: '📨 [alt/TtaIbvkn "testing"] Claude (alt) [agent]: ready?' },
-    { kind: 'msg', from: 'human', ref: 'alt/TtaIbvkn', line: '📨 [alt/TtaIbvkn "testing"] alt [human]: lunch at 1' },
+    { kind: 'msg', from: 'agent', ref: REF, name: 'alt', text: 'ready?', line: '📨 [alt/TtaIbvkn "testing"] Claude (alt) [agent]: ready?' },
+    { kind: 'msg', from: 'human', ref: REF, name: 'alt', text: 'lunch at 1?', line: '📨 [alt/TtaIbvkn "testing"] alt [human]: lunch at 1?' },
   ]
   on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
-  on('process.run', () => ({ value: ran(0, '') }))
+  on('process.run', (_, e) => ({ value: ran(0, e.argv.includes('log') ? LOG : '') }))
   on('process.spawn', async function* () {
     yield { stream: 'stdout' as const, text: events.map(one => JSON.stringify(one)).join('\n') + '\n' }
 
     return { value: { code: 0, signal: null } }
   })
-  on('ui.status', () => ({ value: undefined }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('clock.now', () => ({ value: 1 }))
   on('clock.sleep', () => new Promise<never>(() => undefined))
   on('command.register', () => ({ value: { command: 'wire' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.panes', () => ({ value: [{ id: 'wire', title: 'wire', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('ui.scroll', () => ({}))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
   on('ui.log', (_, e) => {
     logged.push(JSON.stringify(e))
 
@@ -100,20 +187,30 @@ test('a message from the other Claude starts a turn; one from the person only wa
   })
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  // The listener runs on after session.start returns: wait until it has delivered both events.
+  for (let round = 0; round < 200 && prompts.length === 0; round += 1) {
+    await settle()
+  }
+
   await settle()
 
+  // Only the agent's message became a prompt; with the panel up, nothing was added to the transcript.
   expect(prompts.map(one => one.text)).toEqual([events[0]!.line])
-  expect(logged.join('\n')).toContain('lunch at 1')
+  expect(logged.join('\n')).not.toContain('lunch at 1')
 
   await $.prompt.submit({ text: 'what did alt say?', origin: { kind: 'composer' }, wait: false })
 
   expect(prompts[1]?.context?.join('\n')).toContain('lunch at 1')
 })
 
-test('/wire prints the conversation where the app shows no pane', async ($, on) => {
+test('/wire prints the conversation where the app shows no panel', async ($, on) => {
   on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
-  on('process.run', () => ({ value: ran(0, 'alt (verified ✓)') }))
+  on('process.run', (_, e) => ({ value: ran(0, e.argv.includes('log') ? LOG : 'alt (verified ✓)') }))
+  on('ui.panes', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: false, reason: 'no surface places panes' } }))
+  on('ui.scroll', () => ({}))
+  on('ui.status', () => ({ value: undefined }))
   on('command.run', () => ({}))
 
   const out = await $.command.run({
@@ -124,6 +221,7 @@ test('/wire prints the conversation where the app shows no pane', async ($, on) 
   })
 
   expect(out.text).toContain('alt (verified ✓)')
-  expect(out.text).toContain('No wire events yet.')
+  expect(out.text).toContain('alt: lunch at 1?')
+  expect(out.text).toContain('You: yes')
   expect(out.text).toContain('no surface places panes')
 })

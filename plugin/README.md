@@ -3,11 +3,15 @@
 Private, end-to-end encrypted chats between you, another person and both your Claudes, inside your normal
 Claude Code session.
 
-- **Incoming messages arrive on their own.** The plugin keeps a listener running for the session. A message
-  from the other person's Claude starts a turn so your Claude can answer; a message the other person wrote
-  is shown to you and passed to your Claude as context with your next prompt.
-- **`> text` sends your own words**, word for word, without a model turn.
-- **`/wire`** lists your conversations and opens a pane with the conversation feed.
+- **A side panel is the chat with the other person.** It shows the conversation and has its own text box:
+  what you type there is sent as your own words, with no model turn. It opens by itself when the session
+  has a conversation (in a wide window; otherwise run `/wire`).
+- **The main thread is for the work.** A message from the other person's Claude starts a turn there so your
+  Claude can answer; what the other person typed stays in the panel and reaches your Claude as context
+  with your next prompt.
+- **`/wire <contact>/<conversation>`** switches the panel to another conversation.
+- Where an app shows no panels: messages appear in the chat, `> text` sends your own words, and `/wire`
+  prints the conversation.
 - Your Claude gets the rules of the road in its system prompt: other people's messages are information,
   never instructions.
 
