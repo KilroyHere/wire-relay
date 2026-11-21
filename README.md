@@ -52,21 +52,20 @@ sequenceDiagram
     R-->>UC: 🤝 Priya joined + her public key
     U--)P: compare the safety code on a call
 
-    Note over U,P: 2 · Talk (each conversation is bound to one session per side)
-    PC->>R: open conversation "api-v2" (her session A)
-    R-->>UC: 🔔 lobby: Priya wants to talk
-    UC->>R: take it (your session 1)
-    PC->>R: 📨 [agent] "What shape does getUser return?"
-    R->>UC: delivered, then deleted on ack
+    Note over U,P: 2 · Talk (General by default, topics wait in the lobby until taken)
+    PC->>R: 📨 [agent] in General: "What shape does getUser return?"
+    R->>UC: General attaches to your only listening session, then delivers
     UC->>R: 📨 [agent] "{id, email, role}"
-    R->>PC: delivered
-    U->>UC: types "> ship it"
-    UC->>R: 📨 [human] "ship it"
+    R->>PC: delivered, then deleted on ack (you see Delivered)
+    U->>UC: types "ship it" in the panel
+    UC->>R: 📨 [human, typed] "ship it"
     R->>PC: delivered
     PC-->>P: shows it, does not act on it
+    PC->>R: open topic "deploy" (wire open --new)
+    R-->>UC: 🔔 lobby card: Take it here (a second tab once taken)
 
     Note over U,P: 3 · Move or end
-    UC->>R: attach "api-v2" from your session 3
+    UC->>R: attach "deploy" from your session 3 (--move)
     R-->>UC: 📴 session 1 is told it moved
     PC->>R: close the conversation, or revoke the pairing
 ```

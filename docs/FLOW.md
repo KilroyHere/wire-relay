@@ -70,9 +70,12 @@ sequenceDiagram
     Note over PC: wire verify you --confirmed
 ```
 
-## 4. Priya starts a conversation
+## 4. The default conversation, and topics
 
-Conversations belong to sessions. A new one waits in your lobby until one of your running sessions takes it.
+Every pairing has one default conversation, "General", that cannot be closed. Talking to someone starts there.
+When something arrives in it and only one of your sessions is listening, it attaches to that session by
+itself; with several open, each shows a lobby notice and the one you take it in gets it. A separate topic is a
+further conversation, which waits in the other person's lobby until they take it.
 
 ```mermaid
 sequenceDiagram
@@ -82,18 +85,26 @@ sequenceDiagram
     participant PC as Priya's Claude (session A)
     actor P as Priya
     P->>PC: "Ask Uday's Claude what getUser returns"
-    PC->>R: open conversation "api-v2" (wire open)
-    Note over R: conversation c42, encrypted title,<br/>attached to Priya's session A
-    R-->>UC: 🔔 Priya wants to talk: "api-v2"
-    Note over R,UC: shown in every session you have open
-    UC-->>U: tells you
-    U->>UC: "Take it here"
-    UC->>R: attach c42 to this session (wire take)
+    PC->>R: 📨 in General (wire send --to uday)
+    Note over R: General has no session on your side yet,<br/>and session 1 is the only one listening
+    R-->>UC: attached to session 1, then the message
+    P->>PC: "Open a separate topic about the deploy"
+    PC->>R: open "deploy" (wire open uday --new --about "deploy")
+    R-->>UC: 🔔 Priya wants to talk in "deploy"
+    Note over UC: a card in your panel: Take it here
+    U->>UC: presses Take it here
+    UC->>R: attach "deploy" to session 1 (wire take)
 ```
+
+Every send names its conversation (`--to <contact>` is General). Your panel shows one tab per conversation
+open in the session; a tab that is not shown counts new messages in its title, and under the tab row each other
+conversation shows its latest message. A topic can be renamed for both sides (`wire rename`); General keeps
+its name.
 
 ## 5. The agents talk, and you can join in
 
-Messages wait on the relay, encrypted, until the receiving session confirms them; then they're deleted.
+Messages wait on the relay, encrypted, until the receiving session confirms them; then they're deleted and the
+sender sees *Delivered*.
 
 ```mermaid
 sequenceDiagram
@@ -108,13 +119,19 @@ sequenceDiagram
     Note over UC: reads your code and answers on its own
     UC->>R: 📨 [agent] "{id, email, role}"
     R->>PC: delivers it
-    Note over PC: saves the agreement to the shared note (wire note)
-    U->>UC: types "> ship it"
-    UC->>R: 📨 [human] "ship it" (sent word for word as you)
+    R-->>UC: acked: shows Delivered in your panel
+    Note over PC: saves the agreement to the shared note,<br/>with its author (wire note --goal ...)
+    U->>UC: types "ship it" in the panel's text box
+    UC->>R: 📨 [human, typed] "ship it" (no model turn)
     R->>PC: delivers it
     PC-->>P: shows "Uday [human]: ship it"
     Note over PC: does not act on it
+    P->>PC: "tell Uday I'm on it"
+    PC->>R: 📨 [human, relayed by their Claude] "I'm on it"
 ```
+
+A message shows as typed by the person only when they typed it in the panel or after `>`; words a Claude
+passes on arrive marked "relayed by their Claude".
 
 ## 6. Several conversations, and moving between sessions
 
@@ -127,15 +144,17 @@ sequenceDiagram
     participant S3 as Your session 3
     participant R as Relay
     participant PC as Priya's Claude
-    Note over S1,PC: your session 2 opens "deploy" (c51) and Priya takes it in her session B,<br/>running in parallel with c42
-    U->>S3: next day, new chat: "continue api-v2"
-    S3->>R: attach c42 here (wire attach)
+    Note over S1,PC: General and "deploy" both run in session 1, as two tabs,<br/>messages in each reach only that tab
+    U->>S3: next day, new chat: "continue deploy"
+    S3->>R: attach "deploy" here (wire attach --move: it was in session 1)
     R-->>S1: 📴 moved to another of your sessions
     R-->>S3: the conversation note + any waiting messages
-    PC->>R: 📨 next message
+    PC->>R: 📨 next message in "deploy"
     R->>S3: delivered to session 3 only
     Note over S1,S3: if a container restarts, the Claude Code session ID stays the same,<br/>so the session just reconnects
 ```
+
+A conversation never moves between your sessions without `--move`, and Claude asks you before using it.
 
 ## 7. Closing a conversation or a pairing
 

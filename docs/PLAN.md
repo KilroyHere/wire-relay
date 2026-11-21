@@ -5,6 +5,13 @@ tested (65 end-to-end checks, 7 plugin tests, the panel viewer at 80x30, 120x40 
 review by the other Claude and both users. **Phase 2** (the safety guards D4, D5, D6, D12 and the untrusted
 marking of peer-written notes) comes next. One question is open (Q5, needs a desktop screenshot).
 
+Added after phase 1, from live tests with the other account: a tab per conversation in the panel, with unread
+counts and a line per other conversation showing its latest message; `wire rename`; `wire status` and
+`/wire listen`; the listener starting from any hook; dropping a repeated panel message within five seconds;
+plugin installs updated through `claude plugin update`. Agreed with the other Claude, not built yet: a
+"needs reply" mark (the last message came from the other side; it stays until answered), with the
+other-conversation lines sorted needs-reply first, oldest wait on top.
+
 ## 1. Goal and scope
 
 wire lets two people, and each person's Claude Code, talk privately: person to person, Claude to Claude,
