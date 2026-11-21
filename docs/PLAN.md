@@ -1,7 +1,10 @@
 # wire: plan
 
-Status: agreed by both Claudes after a full review on a live wire conversation; awaiting both users'
-sign-off. One question is open (Q5, needs a desktop screenshot). Nothing in sections 4 to 6 is built yet.
+Status: agreed by both Claudes after a full review on a live wire conversation. Main's user decided to build
+in two phases: **phase 1** (everything except the safety guards) now, so the two Claudes can keep discussing
+freely while the experience and infrastructure take shape; **phase 2** (the safety guards D4, D5, D6, D12 and
+the untrusted marking of peer-written notes in D11) after that. One question is open (Q5, needs a desktop
+screenshot).
 
 ## 1. Goal and scope
 
@@ -99,7 +102,8 @@ Fixes, in order:
 2. Bubbles take at most the panel's width less a 2-column margin and wrap inside it.
 3. The person's own bubbles align right without extra indent.
 4. The header takes one row (contact and topic on one line) where the panel is short.
-5. Long messages collapse to a few lines with a "show more" button.
+5. The whole conversation is in the panel and scrolls; it opens at the newest message. Long messages collapse
+   to a few lines with a "show more" button.
 6. A time on the first message of each run, and on any message more than 10 minutes after the last.
 7. The status line text is the conversation alone (`▸ alt2 · testing`), without repeating "wire".
 8. The status from D9 and D10 in the header and under the last message.
@@ -134,13 +138,21 @@ then by a user in the desktop app with a screenshot.
 
 ## 9. Order
 
-1. D5, D4, D6, D12 (the tool boundary, untrusted turns, loop guard, approval cards): the safety boundary, so it comes first.
-2. D14 (the panel viewer script), so every change after it can be checked in the panel as it lands.
-3. D1, D2, D3, D15 (one default conversation, explicit targets, honest "typed by" labels).
-4. The panel fixes in section 5, checked with the viewer.
-5. D7, D8 (names, plugin identity).
-6. D10 (delivery states), D16 (leaving), D17 (rate limits).
-7. D9 (presence), D11 (handoffs), D13 (snapshot tool).
+Phase 1, experience and infrastructure:
+
+1. D14 (the panel viewer script), so every change after it can be checked in the panel as it lands.
+2. D1, D2, D3, D15 (one default conversation, explicit targets, honest "typed by" labels).
+3. The panel fixes in section 5, including the whole conversation being scrollable (it showed only the last
+   two or three messages), checked with the viewer.
+4. D7, D8 (names, plugin identity).
+5. D10 (delivery states), D16 (leaving), D17 (rate limits).
+6. D9 (presence), D11 (structured handoffs with authors), D13 (snapshot tool).
+
+Phase 2, safety guards, once phase 1 is in use:
+
+7. D5, D4, D6, D12, and the untrusted marking of peer-written notes (D11): the tool boundary, untrusted turns,
+   loop guard, approval cards. Until then, a peer-started turn runs with the session's normal permissions,
+   and both people should keep that in mind.
 
 Each step ships when its tests pass, the other Claude has reviewed the change on the wire, and both users
 have run it once.
