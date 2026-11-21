@@ -233,3 +233,19 @@ test('/wire prints the conversation where the app shows no panel', async ($, on)
   expect(out.text).toContain('You: yes')
   expect(out.text).toContain('no surface places panes')
 })
+
+test('the panel tool lets Claude read what the panel shows', async ($, on) => {
+  on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
+  on('process.run', (_, e) => ({ value: ran(0, e.argv.includes('log') ? LOG : '') }))
+  on('ui.panes', () => ({ value: [{ id: 'wire', title: 'wire', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('ui.scroll', () => ({}))
+  on('ui.status', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: 10 * 60_000 }))
+  on('tool.call', () => ({ result: 'not ours' }))
+
+  const read = await $.tool.call({ tool: 'mcp__wire__panel', ref: REF })
+
+  expect(String(read.result)).toContain('alt · testing')
+  expect(String(read.result)).toContain('lunch at 1?')
+  expect(String(read.result)).toContain('[lobby]')
+})

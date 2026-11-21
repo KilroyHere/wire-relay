@@ -67,6 +67,22 @@ sleep 1
 ok "the sender learns it was delivered" '"kind":"acked"' "$(U log --json)"
 ok "open without --new uses it"  "General\" is in this session" "$(SESS=u-s1 U open priya)"
 ok "a topic needs --new"         "add --new|For a separate topic" "$(U open priya --about stuff 2>&1)"
+
+echo "notes with authors"
+P note uday "keep both fields one release" --goal "ship api-v2" --next "mobile update" >/dev/null; wait_for u1.out "updated the note"
+ok "the other side is told who updated the note" "Priya updated the note: ship api-v2" "$(cat "$T/u1.out")"
+ok "reading it shows the fields and the author" "goal: ship api-v2.*" "$(U note priya | tr '\n' ' ')"
+ok "and who wrote it"           "written by Priya"        "$(U note priya)"
+
+echo "presence (off by default)"
+( SESS=u-pres U listen --json > "$T/upres.out" 2>/dev/null & ); sleep 1.5
+SESS=p-s1 P presence active >/dev/null; sleep 1
+ok "nothing is shared while it is off" "\"state\":null" "$(grep presence "$T/upres.out" | tail -1)"
+P presence on >/dev/null; SESS=p-s1 P presence active >/dev/null; sleep 1.5
+ok "once on, active is shared"  "\"state\":\"active\"" "$(grep presence "$T/upres.out" | tail -1)"
+ok "with whether their Claude listens" "\"listening\":true" "$(grep presence "$T/upres.out" | tail -1)"
+P presence off >/dev/null; sleep 1.5
+ok "turning it off clears it"   "\"state\":null" "$(grep presence "$T/upres.out" | tail -1)"
 C1=$(P open uday --new --about "api-v2" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
 P send --to "uday/$C1" "shape ok?" >/dev/null
 wait_for u1.out "🔔"

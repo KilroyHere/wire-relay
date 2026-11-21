@@ -21,6 +21,7 @@
 //   POST /p/<pair>/convs   {}
 //   POST /p/<pair>/close   {conv}                 (not the default conversation)
 //   POST /p/<pair>/clear   {conv}                 delete its waiting messages and note
+//   POST /p/<pair>/presence {state}               'active' | 'away' | null (off); kept in memory only
 //   POST /p/<pair>/revoke  {}
 //   vault (x-wire-vault-token; an encrypted copy of a person's identity + contacts, so new sessions can restore it):
 //   POST /vault/<id>/get   {}
@@ -241,7 +242,8 @@ export class PairV2 extends DurableObject {
       case 'attach': return this.attach(side, other, b);
       case 'send': return this.send(side, other, b);
       case 'ack': return this.ack(side, b);
-      case 'note': return this.note(b);
+      case 'note': return this.note({ ...b, side });
+      case 'presence': return this.presence(side, other, b);
       case 'convs': return this.convs(side, other);
       case 'close': return this.close(other, b);
       case 'clear': return this.clear(b);
@@ -282,11 +284,19 @@ export class PairV2 extends DurableObject {
     const s = {
       side, handle,
       write: (ev) => writer.write(te.encode(JSON.stringify(ev) + '\n')).catch(() => s.close()),
-      close: () => { clearInterval(ping); if (this.streams.get(key) === s) this.streams.delete(key); writer.close().catch(() => {}); },
+      close: () => {
+        clearInterval(ping);
+        if (this.streams.get(key) === s) this.streams.delete(key);
+        writer.close().catch(() => {});
+        if (this.listening(side).length === 0) { (this.presence ||= {})[side] = null; this.push(other, { t: 'presence', state: null, listening: false }); }
+      },
     };
     const ping = setInterval(() => s.write({ t: 'ping' }), 20000);
     this.streams.set(key, s);
+    const wasListening = this.listening(side).length > 1;
     s.write({ t: 'hello', peer_pub: this.get('pub_' + other), client: CLIENT_VERSION });
+    s.write({ t: 'presence', state: this.presence?.[other] ?? null, listening: this.listening(other).length > 0 });
+    if (!wasListening) this.push(other, { t: 'presence', state: this.presence?.[side] ?? null, listening: true });
     s.write({
       t: 'state',
       convs: this.sql.exec(`SELECT id, closed, att_${side} AS att FROM conv`).toArray()
@@ -371,6 +381,15 @@ export class PairV2 extends DurableObject {
     if (b.note === undefined) return json({ note: c.note });
     if (typeof b.note !== 'string' || b.note.length > MAX_META) return json({ error: 'bad note' }, 400);
     this.sql.exec(`UPDATE conv SET note = ?, last = ? WHERE id = ?`, b.note, Date.now(), c.id);
+    // The other side's session holding this conversation is told, so it can show the new note.
+    if (b.side === 'a' || b.side === 'b') this.push(b.side === 'a' ? 'b' : 'a', { t: 'note', conv: c.id });
+    return json({ ok: true });
+  }
+
+  presence(side, other, b) {
+    if (b.state !== 'active' && b.state !== 'away' && b.state !== null) return json({ error: 'bad state' }, 400);
+    (this.presence ||= {})[side] = b.state;
+    this.push(other, { t: 'presence', state: b.state, listening: this.listening(side).length > 0 });
     return json({ ok: true });
   }
 

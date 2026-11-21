@@ -6,7 +6,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { FeedEntry } from '../types'
+import type { FeedEntry, Peer } from '../types'
 
 const PANE = 'wire'
 const feed = atom({ plugin: 'wire', key: 'feed' } as const, [], { shape: 'feed-2' })
@@ -22,6 +22,8 @@ const expanded = atom({ plugin: 'wire', key: 'expanded' } as const, [], { shape:
 // In a small panel (above the prompt, or a short terminal) only the newest messages that fit show,
 // until the person asks for the rest.
 const showAll = atom({ plugin: 'wire', key: 'showAll' } as const, false)
+// What each contact shares: active / away (if they turned presence on) and whether their Claude is listening.
+const peers = atom({ plugin: 'wire', key: 'peers' } as const, {}, { shape: 'peers-1' })
 
 const REF = /\b([a-z0-9][a-z0-9_-]*\/[A-Za-z0-9_-]{6,64})\b/
 const WIRE_COMMAND = /(^|[\s;&|(])wire\s+(send|open|take|attach|close|focus|verify|revoke)\b/
@@ -123,6 +125,10 @@ function plain(one: FeedEntry): Item | null {
     return { type: 'notice', text: 'Moved to another of your sessions' }
   }
 
+  if (one.kind === 'note') {
+    return { type: 'notice', text: `📝 ${one.by === 'you' ? 'You' : (one.by ?? who)} updated the note: ${one.text ?? ''}` }
+  }
+
   if (one.kind === 'verified') {
     return { type: 'notice', text: `You verified ${who} ✓` }
   }
@@ -136,6 +142,38 @@ function plain(one: FeedEntry): Item | null {
 
 // Whether this session has a wire identity; decides which note the system prompt carries.
 let isSetUp = false
+// This person's own activity, for presence (shared only if they turned it on with `wire presence on`).
+let lastActive = 0
+let sharedState: 'active' | 'away' | null = null
+
+async function share($: EngineInterface, state: 'active' | 'away'): Promise<void> {
+  if (sharedState === state) {
+    return
+  }
+
+  sharedState = state
+  const { client, env } = await wire($)
+  await $.process.run(['node', client, 'presence', state], { env }).catch(() => undefined)
+}
+
+// Active: the panel is up and the person typed in the last two minutes. Otherwise away.
+async function noteActivity($: EngineInterface): Promise<void> {
+  lastActive = await $.clock.now()
+
+  if (await isPaneUp($)) {
+    await share($, 'active')
+  }
+}
+
+async function watchPresence($: EngineInterface): Promise<void> {
+  for (;;) {
+    await $.clock.sleep(30_000)
+
+    if (sharedState === 'active' && ((await $.clock.now()) - lastActive > 120_000 || !(await isPaneUp($)))) {
+      await share($, 'away')
+    }
+  }
+}
 
 async function wire($: EngineInterface): Promise<Wire> {
   const env = await $.process.hookEnv()
@@ -361,6 +399,7 @@ async function send($: EngineInterface, words: string): Promise<string | null> {
 
 // The panel's text box: Enter sends, and the box is drawn empty again.
 async function say($: EngineInterface, value: string): Promise<void> {
+  void noteActivity($).catch(() => undefined)
   // A leading ">" is the prompt box's shortcut; typed here out of habit, it is not part of the message.
   const words = value.trim().replace(/^>\s*/, '')
 
@@ -395,7 +434,7 @@ async function act($: EngineInterface, args: readonly string[], done: string): P
 }
 
 async function handle($: EngineInterface, raw: string): Promise<void> {
-  let ev: { kind?: string; line?: string; from?: string; name?: string; text?: string }
+  let ev: { kind?: string; line?: string; from?: string; name?: string; text?: string; contact?: string; state?: string | null; listening?: boolean }
 
   try {
     ev = JSON.parse(raw)
@@ -403,14 +442,21 @@ async function handle($: EngineInterface, raw: string): Promise<void> {
     return
   }
 
-  if (typeof ev.line !== 'string' || ev.line === '') {
+  if (ev.kind === 'presence') {
+    // Only the panel's header shows it: not logged, not told to the model.
+    if (typeof ev.contact === 'string') {
+      const contact = ev.contact
+      const peer: Peer = { state: ev.state === 'active' || ev.state === 'away' ? ev.state : null, listening: ev.listening === true }
+      await update($, peers, all => ({ ...all, [contact]: peer }))
+    }
+
     return
   }
 
   isSetUp = true
   await refresh($)
 
-  if (ev.kind === 'acked') {
+  if (ev.kind === 'acked' || typeof ev.line !== 'string' || ev.line === '') {
     // Delivery news only changes the ticks in the panel.
     return
   }
@@ -471,6 +517,14 @@ async function listen($: EngineInterface): Promise<void> {
   }
 }
 
+// "active · their Claude is listening": what a contact shares, in words.
+function status(peer: Peer, contact: string): string {
+  const person = peer.state === 'active' ? `${contact} is active` : peer.state === 'away' ? `${contact} is away` : ''
+  const agent = peer.listening ? 'their Claude is listening' : 'their Claude is not listening'
+
+  return person === '' ? agent : `${person} · ${agent}`
+}
+
 // How many rows a text takes in a body this wide, wrapped (an estimate: wide characters count as one).
 function rowsOf(text: string, columns: number): number {
   return text.split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / columns)), 0)
@@ -484,6 +538,13 @@ export const register: Register = on => {
       description: 'Open the wire chat panel; /wire <contact>/<conversation> switches conversation',
     })
     void listen($).catch(() => undefined)
+    void watchPresence($).catch(() => undefined)
+    await $.tool.register({
+      name: 'panel',
+      description:
+        'Read the wire panel as your user sees it: the conversation in focus, its messages and notices. Read-only; it shows the same data as `wire log`. Optional input: ref ("<contact>/<conversation>") to read another conversation.',
+      inputSchema: { type: 'object', properties: { ref: { type: 'string' } } },
+    })
 
     return started
   })
@@ -524,6 +585,10 @@ export const register: Register = on => {
 
   on('prompt.submit', async ($, e, next) => {
     const isTyped = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+
+    if (isTyped) {
+      void noteActivity($).catch(() => undefined)
+    }
     const words = e.text.startsWith('>') ? e.text.slice(1).trim() : ''
 
     if (isTyped && e.command === undefined && words !== '') {
@@ -568,6 +633,28 @@ export const register: Register = on => {
     return ran
   }).catch(($, e, next) => next(e))
 
+  on('tool.call', { tool: 'mcp__wire__panel' }, async ($, e) => {
+    const asked = typeof e.ref === 'string' && e.ref !== '' ? e.ref : null
+    await refresh($)
+    const to = asked ?? (await read($, focus))
+    const view = chat(await read($, feed), to, await $.clock.now())
+    const peer = (await read($, peers))[view.contact]
+    const lines = [
+      to === null ? 'No conversation in focus.' : `${view.contact} · ${view.title || to}${peer === undefined ? '' : ` (${status(peer, view.contact)})`}`,
+      ...view.items.map(item =>
+        item.type === 'said'
+          ? `${item.who}${item.time === undefined ? '' : ` (${item.time})`}: ${item.text}${item.state === undefined ? '' : ` [${item.state}]`}`
+          : item.type === 'lobby'
+            ? `[lobby] ${item.text} (wire take ${item.ref})`
+            : item.type === 'verify'
+              ? `[not verified] ${item.text}`
+              : `· ${item.text}`,
+      ),
+    ]
+
+    return { result: lines.join('\n') }
+  })
+
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
 
@@ -602,6 +689,8 @@ export const register: Register = on => {
       )
     }
 
+    const peer = (await read($, peers))[view.contact]
+    const peerLine = peer === undefined ? '' : status(peer, view.contact)
     const isShort = e.props.scroll.bodyRows < 24
     // A docked panel scrolls, so it holds the whole conversation and opens at the newest message. A small
     // one shows the newest messages that fit, keeping the header and the text box in view.
@@ -689,12 +778,12 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" paddingX={1}>
         {isShort ? (
-          <Text weight="semibold">{to === null ? 'wire' : `${view.contact} · ${topic}`}</Text>
+          <Text weight="semibold">{to === null ? 'wire' : `${view.contact} · ${topic}${peerLine === '' ? '' : ` · ${peerLine}`}`}</Text>
         ) : (
           <Box flexDirection="column">
             <Text weight="semibold">{to === null ? 'wire' : view.contact}</Text>
             <Text size="caption" dimColor>
-              {to === null ? 'No conversation yet' : topic}
+              {to === null ? 'No conversation yet' : `${topic}${peerLine === '' ? '' : ` · ${peerLine}`}`}
             </Text>
           </Box>
         )}

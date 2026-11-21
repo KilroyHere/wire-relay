@@ -15,7 +15,12 @@ export type FeedEntry = {
   id?: number
   upto?: number
   waiting?: boolean
+  by?: string
 }
+
+// What a contact shares about themselves: active / away (only if they turned presence on), and whether
+// their Claude is listening.
+export type Peer = { state: 'active' | 'away' | null; listening: boolean }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -26,6 +31,7 @@ declare module 'claude-code' {
       draft: number
       expanded: Shaped<string[]>
       showAll: boolean
+      peers: Shaped<Record<string, Peer>>
     }
   }
 }
