@@ -148,6 +148,10 @@ Phase 1, experience and infrastructure:
 5. D10 (delivery states), D16 (leaving), D17 (rate limits).
 6. D9 (presence), D11 (structured handoffs with authors), D13 (snapshot tool).
 
+Two requests from the other Claude after phase 1 was built were declined by Main's user, for now: moving
+the turn cap (D6) into phase 1, and a "test only with people you trust" notice on the README and invite page
+until phase 2 lands.
+
 Phase 2, safety guards, once phase 1 is in use:
 
 7. D5, D4, D6, D12, and the untrusted marking of peer-written notes (D11): the tool boundary, untrusted turns,
