@@ -129,6 +129,7 @@ claude plugin install wire --marketplace KilroyHere/wire-relay || true
 ```bash
 claude plugin update wire@wire || true
 ```
+For the variables that go with them, see [Setting up a cloud environment](#setting-up-a-cloud-environment).
 Then tell Claude `join this wire invite: <link>`, or set up your own relay (below). Without the plugin,
 everything still works through the `wire` command and Claude Code's Monitor tool.
 
@@ -139,8 +140,8 @@ paste into a Claude Code session. Claude then:
 
 1. downloads the `wire` client from the relay and checks its checksum;
 2. joins the chat and tells you the **safety code** to compare with the person who invited you;
-3. installs the wire plugin (`claude plugin install wire --marketplace <owner>/<repo>`), which adds the
-   chat panel. Run `/reload-plugins` or start a new session to see it; until then Claude listens with the
+3. installs or updates the wire plugin (`claude plugin install wire --marketplace <owner>/<repo>`, then
+   `claude plugin update wire@wire`), which adds the chat panel. Run `/reload-plugins` or start a new session to see it; until then Claude listens with the
    Monitor tool, and steps aside once the plugin is listening.
 
 In a **cloud session with limited network access**, approve the relay's host once when Claude asks. On macOS
@@ -264,6 +265,60 @@ The vault's address, its access token and its encryption key are all derived fro
 HKDF), so the relay stores only ciphertext it cannot read or find without the seed. A relay keeps vaults
 only for its owner and for people paired on it. The seed is an environment variable, so anything running in
 your sessions on that environment can read it: use a personal environment.
+
+## Setting up a cloud environment
+
+Everything wire needs in a Claude Code cloud environment lives in its settings, so every new session on it
+starts ready: no pasting, nothing to re-run.
+
+**Environment variables** (values are secrets: type them into the settings, never into a chat):
+
+| Variable | Who | What it does |
+|---|---|---|
+| `WIRE_SEED=<secret>@<relay host>` | everyone | keeps your identity and contacts across sessions (see above) |
+| `WIRE_OWNER_TOKEN=<owner token>@<relay host>` | relay owners | lets any session create invites; `wire owner` checks it |
+
+**Setup script**, so the chat panel is installed and current in every new container:
+
+```bash
+claude plugin install wire --marketplace KilroyHere/wire-relay || true
+claude plugin update wire@wire || true
+```
+
+`claude plugin install` does nothing when the plugin is already there, hence the second line. The client
+itself needs no setup: it comes with the plugin.
+
+**Network**: with limited network access, allow the relay's host (for example
+`wire-relay.example.workers.dev`).
+
+Then, in a new session, `wire doctor` checks all of it: identity, vault, owner token, relays, pairings and
+the listener, with a fix for each problem. Claude runs it for you if you ask "is wire set up?".
+
+## Adding another account as owner
+
+You can create invites from more than one Claude account (say, a work and a personal one) with the same relay.
+
+1. On the account that already works, run:
+
+   ```bash
+   wire owner-share
+   ```
+
+   It writes one line, `WIRE_OWNER_TOKEN=<token>@<relay host>`, to `~/.wire/owner-token.txt`, readable only by
+   you (`--out <file>` picks another place, such as a folder your app can open). It never prints the token.
+2. Copy that line into the other account's environment variables, then delete the file.
+3. Decide whether the other account is **the same person** or **a separate identity**:
+   - *Same person*: give it the same `WIRE_SEED` as the first account. Its sessions restore your identity
+     and contacts from the vault, so people you invited from either account are reachable from both, and
+     each new contact shows up on the other account too.
+   - *Separate identity*: give it its own `WIRE_SEED` (or none), and run `wire init --name "<name>"` there.
+     It has its own contacts and safety codes; an invite it creates pairs the invitee with that identity
+     only. The two accounts do not see each other's conversations.
+4. In a new session on the other account, run `wire owner` (it checks the relay and the token), then
+   `wire doctor`.
+
+The owner token is shared, not per account: rotating it (`wrangler secret put OWNER_TOKEN`) means updating
+`WIRE_OWNER_TOKEN` on every account, and existing pairings keep working either way.
 
 ## Development
 

@@ -17,14 +17,25 @@ The commands shown are what Claude runs for you; you just say what you want.
 ## 1. You set up your identity (once)
 
 Done once per person. Your identity is a key pair; the owner token lets only you create invites on your relay.
+Both secrets go in your environment variables, never into the chat: `WIRE_OWNER_TOKEN=<token>@<relay host>`
+and, to keep your identity across sessions, `WIRE_SEED=<secret>@<relay host>`.
 
 ```mermaid
 sequenceDiagram
     actor U as You
     participant UC as Your Claude
-    U->>UC: "Set up wire"
-    Note over UC: creates your key pair, saves the owner token, backs both up<br/>wire init · wire owner · wire backup
+    participant R as Relay
+    U->>UC: "Set up wire as a relay owner"
+    Note over UC: creates your key pair (wire init, with the name you give)
+    UC->>R: is this a wire relay, and does it accept this owner token? (wire owner)
+    R-->>UC: yes
+    Note over UC: saves the owner token, backs identity and token up to your vault<br/>(encrypted with WIRE_SEED)
+    U->>UC: "Is wire set up?"
+    Note over UC: wire doctor: ✓ or ✗ with a fix, for each part
 ```
+
+A second account of yours can invite too: `wire owner-share` writes the `WIRE_OWNER_TOKEN` line to a private
+file for its settings. With the same `WIRE_SEED` it is the same person; with another, a separate identity.
 
 ## 2. You invite Priya
 

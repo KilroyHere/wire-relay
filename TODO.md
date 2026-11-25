@@ -1,6 +1,6 @@
 # wire: what is left
 
-Done so far: phase 1 of [docs/PLAN.md](docs/PLAN.md), plus the review fixes and setup work (A–E) below.
+Done so far: phase 1 of [docs/PLAN.md](docs/PLAN.md), plus the review fixes, setup work and docs (A–F) below.
 Everything still open is under **Next** and **Later**.
 
 ## Done in this round
@@ -36,16 +36,10 @@ Everything still open is under **Next** and **Later**.
 
   Each failing check comes with its fix, and `wire doctor` exits 1 when something is wrong.
 
-## Next
-
-### F. Docs
-
-- [ ] README: a section "Add another account as owner": `wire owner-share` on the first account, then the
-      variable in the second account's environment. Cover the same `WIRE_SEED` (same person, same contacts)
-      versus a different one (a separate identity), and what each means for invites.
-- [ ] README and plugin README: setup-script lines for a cloud environment next to the variables
-      (`claude plugin install …` then `claude plugin update wire@wire`; `wire` itself needs no setup).
-- [ ] docs/FLOW.md step 1: show `WIRE_OWNER_TOKEN` and `wire owner` checking the relay and token.
+- **F. Docs.** README sections "Setting up a cloud environment" (variables, setup script, network, `wire doctor`)
+  and "Adding another account as owner" (`wire owner-share`; same `WIRE_SEED` = same person, another = a
+  separate identity). The plugin README shows the setup script and variables. docs/FLOW.md step 1 shows
+  `wire owner` checking the relay and token, and `wire doctor`.
 
 ## Later
 

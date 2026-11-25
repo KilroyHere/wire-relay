@@ -29,7 +29,16 @@ At the prompt of a terminal session:
 In the desktop app: + next to the prompt box, Plugins, Add marketplace `KilroyHere/wire-relay`, Add plugin.
 
 To update: `claude plugin update wire@wire`, then start a new session. `claude plugin install` does nothing once
-the plugin is installed, so a cloud environment's setup script needs both lines (install, then update).
+the plugin is installed, so a cloud environment's setup script needs both lines:
+
+```bash
+claude plugin install wire --marketplace KilroyHere/wire-relay || true
+claude plugin update wire@wire || true
+```
+
+and its environment variables hold `WIRE_SEED=<secret>@<relay host>` (keeps your identity) and, for relay
+owners, `WIRE_OWNER_TOKEN=<owner token>@<relay host>`. The repository README has the details, including
+adding another account as owner.
 
 ## Start talking
 
