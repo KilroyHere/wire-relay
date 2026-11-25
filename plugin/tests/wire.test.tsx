@@ -306,3 +306,26 @@ test('each tab sends to its own conversation', async ($, on) => {
   expect(new Set(targets)).toEqual(new Set([REF, TOPIC]))
   expect(sends.map(one => one.stdin)).toEqual(['hello tab 0', 'hello tab 1'])
 })
+
+test('/wire doctor runs the client\'s checks and shows every line', async ($, on) => {
+  const runs: Runs = []
+  on('process.hookEnv', () => ({ value: { CLAUDE_PLUGIN_ROOT: '/plugin' } }))
+  on('process.run', (_, e) => {
+    runs.push({ argv: e.argv })
+
+    return { value: e.argv.includes('doctor') ? ran(1, '✓ identity: Main\n✗ nothing is listening\n    fix: /wire listen\n', '') : ran(0, '') }
+  })
+  on('ui.panes', () => ({ value: [] }))
+  on('command.run', () => ({}))
+
+  const out = await $.command.run({
+    command: 'wire',
+    args: 'doctor',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 100 },
+  })
+
+  expect(runs.some(one => one.argv.includes('doctor'))).toBe(true)
+  expect(out.text).toContain('✓ identity: Main')
+  expect(out.text).toContain('fix: /wire listen')
+})

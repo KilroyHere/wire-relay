@@ -31,19 +31,38 @@ SHA=$(curl -s "$R/wire.mjs" | sha256sum | cut -d' ' -f1)
 ok "checksum matches"           "$SHA"                    "$(curl -s "$R/wire.mjs.sha256")"
 ok "invite page embeds it"      "$SHA"                    "$(curl -s "$R/i")"
 ok "its one paste installs the plugin too" "claude plugin install wire --marketplace '\+plugin" "$(curl -s "$R/i")"
+ok "and updates it when already installed" "claude plugin update wire@wire" "$(curl -s "$R/i")"
+ok "the invite page says what wire needs" "Claude Code.*|expires 7 days" "$(curl -s "$R/i")"
+ok "and carries a safety note"  "not instructions"        "$(curl -s "$R/i")"
 
 echo "step 1: owner token"
 U init --name Uday >/dev/null
-echo -n wrong | U owner --relay "$R" >/dev/null
-ok "wrong owner token refused"  "not owner"               "$(U invite Priya 2>&1)"
-echo -n devtoken | U owner --relay "$R" >/dev/null 2>&1
+ok "wrong owner token refused"  "does not accept"         "$(echo -n wrong | U owner --relay "$R" 2>&1)"
+ok "and not saved"              "Only a relay owner"      "$(U invite Priya 2>&1)"
+OUT=$(WIRE_OWNER_TOKEN="devtoken@nohost" U owner 2>&1)
+ok "a malformed WIRE_OWNER_TOKEN is refused" "not in the form" "$OUT"
+ok "without printing it"        "^$"                      "$(grep -E 'devtoken|nohost' <<<"$OUT" || true)"
+ok "a host that is not a relay is refused" "cannot reach" "$(WIRE_OWNER_TOKEN="devtoken@http://127.0.0.1:1" U owner 2>&1)"
+ok "owner help explains the setup" "WIRE_OWNER_TOKEN=<owner token>@<relay host>" "$(U help owner)"
+ok "WIRE_OWNER_TOKEN=<token>@<relay> is checked and saved" "checked and saved for $R" "$(WIRE_OWNER_TOKEN="devtoken@$R" U owner 2>&1)"
+OUT=$(U owner-share --out "$T/share.txt" 2>&1)
+ok "owner-share writes the line to a file" "WIRE_OWNER_TOKEN=devtoken@$R" "$(cat "$T/share.txt")"
+ok "readable only by the owner" "^600$"                   "$(stat -c %a "$T/share.txt")"
+ok "and does not print the token" "^$"                    "$(grep devtoken <<<"$OUT" || true)"
+WIRE_DIR=$T/o2 node plugin/client/wire.mjs init --name Other >/dev/null 2>&1
+ok "another account invites with only WIRE_OWNER_TOKEN set" "/i#" "$(WIRE_DIR=$T/o2 WIRE_OWNER_TOKEN="$(cut -d= -f2- "$T/share.txt")" node plugin/client/wire.mjs invite sam 2>&1)"
 ok "unknown pairing refused"    "no such pairing"         "$(curl -s -X POST -d '{}' "$R/p/AAAAAAAAAAAAAAAAAAAAAA/send")"
+H64=$(printf 'a%.0s' $(seq 64)); PUB=$(printf 'B%.0s' $(seq 43))
+ok "a pairing cannot be created without the owner token" "not found" "$(curl -s -X POST -d "{\"invite_hash\":\"$H64\",\"pub_a\":\"$PUB\",\"tok_a\":\"$H64\"}" "$R/p/BypassAttemptPair01/init")"
+ok "so nothing was created"     "no such pairing"         "$(curl -s -X POST -d '{"invite":"x","pub_b":"'$PUB'","tok_b":"'$H64'"}' "$R/p/BypassAttemptPair01/claim")"
 
 echo "step 2: invite, claim once, safety code"
 LINK=$(U invite Priya 2>/dev/null | grep '/i#' | tr -d ' ')
 LOG=u1.out listen U
 JOIN=$(P join "$LINK" --name Priya 2>/dev/null)
 ok "invitee joins"              "Safety code"             "$JOIN"
+ok "join tells the person how to use it" "Tell your user" "$JOIN"
+ok "and how to keep the pairing" "WIRE_SEED=<a long random secret>@$R" "$JOIN"
 ok "invite is single-use"       "already used"            "$(WIRE_DIR=$T/mallory node plugin/client/wire.mjs join "$LINK" --name Mallory 2>&1)"
 wait_for u1.out joined
 CODE_P=$(grep -o 'Safety code: [^.]*' <<<"$JOIN" | head -1 | cut -d' ' -f3-7)
@@ -67,6 +86,26 @@ sleep 1
 ok "the sender learns it was delivered" '"kind":"acked"' "$(U log --json)"
 ok "open without --new uses it"  "General\" is in this session" "$(SESS=u-s1 U open priya)"
 ok "a topic needs --new"         "add --new|For a separate topic" "$(U open priya --about stuff 2>&1)"
+
+echo "messages out of order across conversations"
+CT=$(P open uday --new --about "later" | grep -o 'uday/[A-Za-z0-9_-]*' | cut -d/ -f2)
+P send --to "uday/$CT" "older, in a conversation taken later" >/dev/null
+P send --to uday "newer, in General" >/dev/null; wait_for u1.out "newer, in General"
+U take "priya/$CT" >/dev/null; wait_for u1.out "older, in a conversation taken later"
+ok "a conversation taken later still gets its older message" "older, in a conversation taken later" "$(cat "$T/u1.out")"
+P send --to uday "after the take" >/dev/null; wait_for u1.out "after the take"
+ok "and a newer confirmation does not delete anything unseen" "^0$" "$(U ls priya | grep -c "later.*waiting" || true)"
+
+echo "delivered per message"
+CW=$(U open priya --new --about "nobody here yet" | grep -o 'priya/[A-Za-z0-9_-]*' | cut -d/ -f2)
+U send --to "priya/$CW" "waits: priya has not taken this" >/dev/null
+U send --to priya "delivered: priya listens in General" >/dev/null; sleep 2
+ok "only the delivered message is marked delivered" "ok" "$(U log --json | node -e '
+  const l = require("fs").readFileSync(0, "utf8").trim().split("\n").map(JSON.parse);
+  const sent = (t) => l.filter((e) => e.kind === "sent" && e.text === t).pop()?.id;
+  const acked = new Set(l.filter((e) => e.kind === "acked" && e.ids).flatMap((e) => e.ids));
+  const w = sent("waits: priya has not taken this"), d = sent("delivered: priya listens in General");
+  console.log(acked.has(d) && !acked.has(w) ? "ok" : "wrong: waiting " + w + " delivered " + d + " acked " + [...acked]);')"
 
 echo "notes with authors"
 P note uday "keep both fields one release" --goal "ship api-v2" --next "mobile update" >/dev/null; wait_for u1.out "updated the note"
@@ -168,6 +207,12 @@ ok "both sessions get a lobby notice" "🔔.*General" "$(cat "$T/l1.out")"
 SESS=l-s2 L take uday >/dev/null; wait_for l2.out "which session gets this"; wait_for l1.out "taken in another"
 ok "the one that takes it gets the message" "which session gets this" "$(cat "$T/l2.out")"
 ok "the other drops its notice" "taken in another of your sessions" "$(cat "$T/l1.out")"
+# A second pairing whose other side sits on the same side letter as Lee: it must not see Lee's presence.
+LINKK=$(U invite kai 2>/dev/null | grep '/i#' | tr -d ' '); WIRE_DIR=$T/kai node plugin/client/wire.mjs join "$LINKK" --name Kai >/dev/null 2>&1
+SESS=l-s2 L presence on >/dev/null; SESS=l-s2 L presence active >/dev/null; sleep 1
+( SESS=u-pres2 U listen --json > "$T/upres2.out" 2>/dev/null & ); sleep 3
+ok "one pairing's presence does not show in another" "\"state\":null" "$(grep '"contact":"kai"' "$T/upres2.out" | grep presence | tail -1)"
+ok "while its own does"         "\"state\":\"active\"" "$(grep '"contact":"lee"' "$T/upres2.out" | grep presence | tail -1)"
 SESS=l-s2 L send --to uday "hello from lee" >/dev/null; sleep 1; SESS=u-s1 U take lee >/dev/null 2>&1; wait_for u1.out "hello from lee"
 ok "a self-chosen name that differs is shown" "lee \(calls themselves Lee Ann\)" "$(cat "$T/u1.out")"
 
@@ -184,6 +229,20 @@ ok "after which none is found" "No vault" "$(WIRE_DIR=$T/new3 WIRE_SEED=$SEED no
 echo "status"
 ok "status says when nothing is listening" "listener: NOT running" "$(SESS=u-none U status)"
 ok "and when the session is"    "listener: running"       "$(SESS=u-pres U status)"
+
+echo "doctor and secrets"
+ok "doctor checks the setup"    "identity: Uday"          "$(SESS=u-pres U doctor)"
+ok "and the owner token"        "relay owner of $R"       "$(SESS=u-pres U doctor)"
+ok "and each pairing"           "kai: safety code not verified" "$(SESS=u-pres U doctor)"
+ok "and this session's listener" "listening in this session" "$(SESS=u-pres U doctor)"
+ok "it exits 1 when something is wrong" "no identity.*exit=1" "$( (WIRE_DIR=$T/empty node plugin/client/wire.mjs doctor 2>&1; echo exit=$?) | tr '\n' ' ')"
+ok "a wrong WIRE_OWNER_TOKEN shows in doctor" "differs from the saved" "$(WIRE_OWNER_TOKEN="other@$R" SESS=u-pres U doctor)"
+OUT=$(WIRE_DIR=$T/s1 WIRE_SEED="abcdefghijklmnopqrstuvwxyz@nohost" node plugin/client/wire.mjs restore 2>&1)
+ok "a malformed WIRE_SEED is explained" "not in the form" "$OUT"
+ok "without printing any of it" "^$"                      "$(grep -E 'abcdef|nohost' <<<"$OUT" || true)"
+OUT=$(NO_PROXY=leak-check.invalid,127.0.0.1 no_proxy=leak-check.invalid,127.0.0.1 WIRE_DIR=$T/s2 WIRE_SEED="abcdefghijklmnopqrstuvwxyz@leak-check.invalid" node plugin/client/wire.mjs restore 2>&1)
+ok "a seed whose relay is unreachable fails" "unreachable" "$OUT"
+ok "without naming the host"    "^$"                      "$(grep -E 'leak-check|abcdef' <<<"$OUT" || true)"
 
 echo "version"
 ok "wire version shows the checksum" "$(sha256sum plugin/client/wire.mjs | cut -d' ' -f1)" "$(node plugin/client/wire.mjs version)"

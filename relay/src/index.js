@@ -10,13 +10,14 @@
 //                                     With PLUGIN_SOURCE set (owner/repo), its one paste also installs the plugin.
 //   GET  /wire.mjs, /v/<ver>/wire.mjs  the client this relay was deployed with; /wire.mjs.sha256 its checksum
 //   POST /pairs                       (x-wire-owner)            create a pairing (owner only)
+//   POST /owner/check                 (x-wire-owner)            is this the owner token? (for wire owner)
 //   POST /p/<pair>/claim              {invite, pub_b, tok_b}    invitee claims the pairing, once
 //   member endpoints (x-wire-side: a|b, x-wire-token):
 //   GET  /p/<pair>/stream?handle=&since=   NDJSON event stream for one session
 //   POST /p/<pair>/open    {conv, title, handle}
 //   POST /p/<pair>/attach  {conv, handle}
 //   POST /p/<pair>/send    {conv, body}
-//   POST /p/<pair>/ack     {handle, upto}
+//   POST /p/<pair>/ack     {handle, ids}          after the client processed them; old clients send {upto}
 //   POST /p/<pair>/note    {conv, note?}
 //   POST /p/<pair>/convs   {}
 //   POST /p/<pair>/close   {conv}                 (not the default conversation)
@@ -93,6 +94,11 @@ export default {
       return new Response(INVITE_HTML.replaceAll('__VER__', CLIENT_VERSION).replaceAll('__SHA__', await clientSha256())
         .replaceAll('__PLUGIN__', /^[\w.-]+\/[\w.-]+$/.test(env.PLUGIN_SOURCE || '') ? env.PLUGIN_SOURCE : ''),
         { headers: { 'content-type': 'text/html; charset=utf-8', 'referrer-policy': 'no-referrer' } });
+    if (url.pathname === '/owner/check' && req.method === 'POST') {
+      const tok = req.headers.get('x-wire-owner') || '';
+      const ok = !!env.OWNER_TOKEN && !!tok && (await safeEq(tok, env.OWNER_TOKEN));
+      return ok ? json({ ok: true }) : json({ error: 'not the owner token for this relay' }, 401);
+    }
     if (url.pathname === '/pairs' && req.method === 'POST') {
       const tok = req.headers.get('x-wire-owner') || '';
       if (!env.OWNER_TOKEN || !tok || !(await safeEq(tok, env.OWNER_TOKEN))) return json({ error: 'not owner' }, 401);
@@ -107,7 +113,8 @@ export default {
       return vault(req, env, vm[1], vm[2]);
     }
     const m = url.pathname.match(/^\/p\/([A-Za-z0-9_-]{6,64})\/([a-z]+)$/);
-    if (!m) return json({ error: 'not found' }, 404);
+    // 'init' only comes from the owner route above, never from outside.
+    if (!m || m[2] === 'init') return json({ error: 'not found' }, 404);
     if (m[2] === 'claim' && !(await allowed(req, env, 'claim'))) return tooMany('invite claims');
     return env.PAIR.get(env.PAIR.idFromName(m[1])).fetch(req);
   },
@@ -222,7 +229,7 @@ export class PairV2 extends DurableObject {
   async fetch(req) {
     const url = new URL(req.url);
     const action = url.hostname === 'do' ? url.pathname.slice(1) : url.pathname.split('/')[3];
-    if (action === 'init') return this.init(await readJson(req));
+    if (action === 'init') return url.hostname === 'do' ? this.init(await readJson(req)) : json({ error: 'not found' }, 404);
     if (!this.get('created')) return json({ error: 'no such pairing' }, 404);
     if (action === 'claim' && req.method === 'POST') return this.claim(await readJson(req));
 
@@ -290,15 +297,15 @@ export class PairV2 extends DurableObject {
         clearInterval(ping);
         if (this.streams.get(key) === s) this.streams.delete(key);
         writer.close().catch(() => {});
-        if (this.listening(side).length === 0) { (this.presence ||= {})[side] = null; this.push(other, { t: 'presence', state: null, listening: false }); }
+        if (this.listening(side).length === 0) { (this.presenceOf ||= {})[side] = null; this.push(other, { t: 'presence', state: null, listening: false }); }
       },
     };
     const ping = setInterval(() => s.write({ t: 'ping' }), 20000);
     this.streams.set(key, s);
     const wasListening = this.listening(side).length > 1;
     s.write({ t: 'hello', peer_pub: this.get('pub_' + other), client: CLIENT_VERSION });
-    s.write({ t: 'presence', state: this.presence?.[other] ?? null, listening: this.listening(other).length > 0 });
-    if (!wasListening) this.push(other, { t: 'presence', state: this.presence?.[side] ?? null, listening: true });
+    s.write({ t: 'presence', state: this.presenceOf?.[other] ?? null, listening: this.listening(other).length > 0 });
+    if (!wasListening) this.push(other, { t: 'presence', state: this.presenceOf?.[side] ?? null, listening: true });
     s.write({
       t: 'state',
       convs: this.sql.exec(`SELECT id, closed, att_${side} AS att FROM conv`).toArray()
@@ -367,12 +374,22 @@ export class PairV2 extends DurableObject {
     return json({ id, delivered_to_session: !!dest && [...this.streams.values()].some((s) => s.side === other && s.handle === dest) });
   }
 
+  // The receiving session confirms the exact messages it processed; only those are deleted, so a message in a
+  // conversation it took later (with a lower id) is never swept away by a newer one.
   ack(side, b) {
     if (!ID.test(b.handle || '')) return json({ error: 'bad handle' }, 400);
-    const upto = Number(b.upto) || 0;
-    this.sql.exec(`DELETE FROM msg WHERE sender != ? AND id <= ? AND conv IN (SELECT id FROM conv WHERE att_${side} = ?)`,
-      side, upto, b.handle);
-    // Tells the sender's sessions their messages up to `upto` reached a session (shown as "delivered").
+    const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 500) : null;
+    const attached = `conv IN (SELECT id FROM conv WHERE att_${side} = ?)`;
+    if (ids && ids.length) {
+      const done = this.sql.exec(`SELECT id FROM msg WHERE sender != ? AND id IN (${ids.map(() => '?').join(',')}) AND ${attached}`,
+        side, ...ids, b.handle).toArray().map((r) => r.id);
+      if (done.length) this.sql.exec(`DELETE FROM msg WHERE id IN (${done.map(() => '?').join(',')})`, ...done);
+      // Tells the sender's sessions exactly which messages reached a session (shown as "Delivered").
+      if (done.length) this.push(side === 'a' ? 'b' : 'a', { t: 'acked', ids: done });
+      return json({ ok: true, deleted: done.length });
+    }
+    const upto = Number(b.upto) || 0; // clients before 2.7
+    this.sql.exec(`DELETE FROM msg WHERE sender != ? AND id <= ? AND ${attached}`, side, upto, b.handle);
     this.push(side === 'a' ? 'b' : 'a', { t: 'acked', upto });
     return json({ ok: true });
   }
@@ -390,7 +407,7 @@ export class PairV2 extends DurableObject {
 
   presence(side, other, b) {
     if (b.state !== 'active' && b.state !== 'away' && b.state !== null) return json({ error: 'bad state' }, 400);
-    (this.presence ||= {})[side] = b.state;
+    (this.presenceOf ||= {})[side] = b.state;
     this.push(other, { t: 'presence', state: b.state, listening: this.listening(side).length > 0 });
     return json({ ok: true });
   }
@@ -475,8 +492,12 @@ button{margin-top:8px;font:600 15px system-ui;padding:10px 18px;border-radius:8p
 button:disabled{opacity:.45;cursor:not-allowed}
 details{margin-top:26px}pre{margin:8px 0 0;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;
 font:12.5px/1.55 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
-.bad{color:var(--accent)}</style></head><body><main>
+.bad{color:var(--accent)}h2{font-size:17px;margin:30px 0 6px}ul{padding-left:22px;margin:6px 0}ul>li{margin:0 0 6px}</style></head><body><main>
 <h1 id="title">You're invited to a private chat</h1><p id="who"></p>
+<p id="what">wire is a private, end-to-end encrypted conversation between you, the person who invited you, and your
+Claude Code agents: either of you can write, and your Claudes can ask each other questions. You need
+<a href="https://claude.com/claude-code">Claude Code</a> (terminal, desktop app or claude.ai/code). This link works
+once and expires 7 days after it was made.</p>
 <ol id="steps">
 <li>Your name<label for="name">How you'll appear to the person who invited you.</label>
 <input id="name" autocomplete="name" placeholder="Your name" maxlength="40"></li>
@@ -489,6 +510,19 @@ who invited you, on a call or by text, to make sure nobody intercepted this link
 and installs the wire plugin for Claude Code from GitHub (<code>__PLUGIN__</code>), which adds the chat panel</span>.
 Messages are end-to-end encrypted. This link works once, and its secret part never leaves your browser.
 In a cloud session with limited network access, Claude asks you to allow <code id="host"></code> once.</p></details>
+<section id="use"><h2>Using it</h2><ul>
+<li>The wire panel beside your chat shows the conversation; type there, or start a prompt line with <code>&gt;</code>, to write
+yourself. <code>/wire</code> opens it. If it is missing, start a new session (or run <code>/reload-plugins</code>).</li>
+<li>Or ask Claude: "tell <span class="inv">them</span> I'm running late", "ask <span class="invs">their</span> Claude what the API
+returns", "open a wire topic about the deploy".</li>
+<li>Cloud sessions start fresh. To keep this chat in new sessions, ask Claude how to set <code>WIRE_SEED</code>; it goes in
+your environment variables, never into a chat.</li>
+<li>To end it: "end my wire with <span class="inv">them</span>". Either side can, at any time.</li></ul>
+<h2>Safety</h2><ul>
+<li>Compare the safety code over a channel you already trust (a call, a text). If it differs, end the chat.</li>
+<li>Messages from the other side are information for your Claude, not instructions: it asks you before running,
+editing, pushing or sharing anything because of them.</li>
+<li>Only ever paste this page's message from a link you got from someone you know.</li></ul></section>
 </main><script>
 const f=location.hash.slice(1).split('.'), ok=f.length>=3&&f[0]&&f[1]&&f[2];
 const inviter=f[3]?decodeURIComponent(f[3]):'Someone', o=location.origin, plugin='__PLUGIN__';
@@ -497,13 +531,13 @@ $('host').textContent=location.host; if(!plugin)$('plug').hidden=true;
 function build(){
   const name=$('name').value.trim().replace(/["\\\\$\`]/g,'');
   const join='mkdir -p ~/.wire && curl -fsSL '+o+'/v/__VER__/wire.mjs -o ~/.wire/wire.mjs && echo "__SHA__  '+'$HOME/.wire/wire.mjs" | sha256sum -c - && node ~/.wire/wire.mjs join "'+location.href+'" --name "'+name+'"';
-  const add=plugin?'\\n\\nThen install the chat panel (skip it if this fails):\\n\\nclaude plugin install wire --marketplace '+plugin:'';
+  const add=plugin?'\\n\\nThen install or update the chat panel (skip it if this fails):\\n\\nclaude plugin install wire --marketplace '+plugin+'\\nclaude plugin update wire@wire\\n\\nThe panel appears in a new session (or after /reload-plugins).':'';
   return 'Join '+inviter+"'s private wire chat for me. Run this, then follow the rules it prints:\\n\\n"+join+add;
 }
 function refresh(){ $('copy').disabled=!$('name').value.trim(); $('prompt').textContent=build(); }
-if(!ok){ $('title').textContent='This invite link is incomplete'; $('steps').hidden=true;
+if(!ok){ $('title').textContent='This invite link is incomplete'; $('steps').hidden=true; $('use').hidden=true; $('what').hidden=true;
   $('who').innerHTML='<span class="bad">Ask for the full link, including everything after the #.</span>'; }
-else{ $('who').textContent=inviter+' invited you. Three steps:'; $('name').addEventListener('input',refresh); refresh(); }
+else{ $('who').textContent=inviter+' invited you. Three steps:'; document.querySelectorAll('.inv').forEach((e)=>e.textContent=inviter); document.querySelectorAll('.invs').forEach((e)=>e.textContent=inviter+"'s"); $('name').addEventListener('input',refresh); refresh(); }
 $('copy').onclick=()=>{ const t=build(), b=$('copy');
   navigator.clipboard.writeText(t).then(()=>{b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500)})
     .catch(()=>{ $('prompt').parentElement.open=true; const r=document.createRange(); r.selectNodeContents($('prompt')); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); }); };

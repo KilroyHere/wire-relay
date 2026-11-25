@@ -177,9 +177,16 @@ curl -fsSL https://<your-relay>/wire.mjs -o ~/.wire/wire.mjs --create-dirs && no
 wire init --name "<you>"
 ```
 
+Add `WIRE_OWNER_TOKEN=<the OWNER_TOKEN>@<your-relay host>` to your environment variables (a cloud
+environment's settings, or your shell profile), then check and save it:
+
 ```bash
-echo -n "<the OWNER_TOKEN>" | wire owner --relay https://<your-relay>
+wire owner
 ```
+
+(Without the variable: `echo -n "<the OWNER_TOKEN>" | wire owner --relay https://<your-relay>`.) With the
+variable set, any new session on that account can invite. `wire help owner` walks through all of it, and
+`wire owner-share` writes the variable's line to a private file for setting up another account.
 
 ```bash
 wire invite priya
@@ -193,7 +200,8 @@ page installs the plugin from there (or remove it to leave the plugin out of the
 
 ```
 wire init --name <you>                 create your identity (once per person)
-wire owner --relay <url>               save the relay owner token (stdin), relay owners only
+wire owner [--relay <url>]             check and save the owner token (WIRE_OWNER_TOKEN=<token>@<host>, or stdin)
+wire owner-share [--out <file>]        write the WIRE_OWNER_TOKEN line to a private file, for another account
 wire invite <contact>                  one-time invite link
 wire join <link> --name <you>          accept an invite
 wire contacts                          contacts, safety codes, verified status
@@ -213,6 +221,9 @@ wire listen [--json]                   event stream for this session (use with M
 wire log [-n N] [--json]               what this session saw and sent
 wire backup · wire restore · wire forget   your encrypted vault (WIRE_SEED)
 wire update                            replace the client with the relay's current version
+wire status                            is this session listening, and what is waiting for it
+wire doctor                            check the whole setup; each problem comes with its fix
+wire help owner                        how to become a relay owner
 wire version · wire install · wire whoami · wire rules
 ```
 

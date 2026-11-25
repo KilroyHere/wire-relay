@@ -27,4 +27,6 @@
     their streams open; a new relay action can answer "unknown action" until those reconnect.
   - Bump the plugin's `version` in `plugin/.claude-plugin/plugin.json` with every plugin change, and the
     client's `VERSION` with every client change (the relay tells older clients to update).
+- The client never prints WIRE_SEED, WIRE_OWNER_TOKEN, an owner token, or a host taken from WIRE_SEED. curl's own
+  error text names the host, so network failures go through `curlWhy()`; e2e checks that nothing leaks.
 - Never commit `.dev.vars`, owner tokens, account ids, or anyone's `contacts.json` / backups.

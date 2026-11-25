@@ -14,6 +14,7 @@ export type FeedEntry = {
   code?: string
   id?: number
   upto?: number
+  ids?: number[]
   waiting?: boolean
   by?: string
 }

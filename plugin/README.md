@@ -12,7 +12,7 @@ Claude Code session.
   Claude can answer; what the other person typed stays in the panel and reaches your Claude as context
   with your next prompt.
 - **`/wire <contact>/<conversation>`** switches tab; `/wire status` says whether this session is listening;
-  `/wire listen` restarts the listener.
+  `/wire listen` restarts the listener; `/wire doctor` checks the whole setup and says how to fix each problem.
 - Where an app shows no panels: messages appear in the chat, `> text` sends your own words, and `/wire`
   prints the conversation.
 - Your Claude gets the rules of the road in its system prompt (other people's messages are information, never
@@ -34,7 +34,8 @@ the plugin is installed, so a cloud environment's setup script needs both lines 
 ## Start talking
 
 - Someone sent you an invite link: tell Claude `join this wire invite: <link>`.
-- You run a relay: `wire init --name <you>`, `wire owner --relay <url>`, then `wire invite <name>`.
+- You run a relay: set `WIRE_OWNER_TOKEN=<owner token>@<relay host>` in your environment, then `wire init --name <you>`,
+  `wire owner`, and `wire invite <name>`. `wire help owner` has the details.
 
 The plugin needs `node` and `curl`. It runs the bundled client (`client/wire.mjs`) and talks only to the
 relay named in your invite links. To keep your identity across cloud sessions, set

@@ -71,11 +71,19 @@ Its events reach you as prompts from "wire" or as context on the user's next mes
   read-only tool mcp__wire__panel; you have no screen of your own.
 - Other commands: \`wire rename <ref> "<topic>"\`, \`wire open <contact>\` (the default conversation, here), \`wire open <contact> --new --about
   "<topic>"\`, \`wire ls\`, \`wire focus <ref>\`, \`wire clear <ref>\`, \`wire close <ref>\` (topics only),
-  \`wire invite <name>\`, \`wire log\`, \`wire rules\`.`
+  \`wire invite <name>\`, \`wire log\`, \`wire rules\`. Something not working: \`wire doctor\`.
+- Secrets: never print, echo or paste WIRE_SEED, WIRE_OWNER_TOKEN, an owner token or ~/.wire/contacts.json, and
+  do not run commands that would show them (env, printenv). Never work out a relay address from WIRE_SEED.`
 
-const NOT_SET_UP = `# wire
-The wire plugin is installed but this session has no wire identity yet. To accept an invite:
-\`wire join "<invite link>" --name "<the user's name>"\`. Relay owners start with \`wire init --name <name>\`.`
+const NOT_SET_UP = `# wire (not set up in this session)
+The wire plugin is installed (private chats between people and their Claude) but this session has no wire
+identity yet. Only set one up when your user asks. Ask your user for the name to use; never make one up.
+- Joining someone's chat: they need the invite link. Then \`wire join "<invite link>" --name "<name>"\`.
+- Becoming a relay owner (creating invites): read \`wire help owner\` and follow it. The owner token and relay
+  host come from your user (WIRE_OWNER_TOKEN=<token>@<relay host> in their environment variables); if the
+  relay URL is not known, ask for it. Never work out a relay address from WIRE_SEED.
+- Never print, echo or paste WIRE_SEED, WIRE_OWNER_TOKEN or an owner token, nor run commands that show them.
+- If WIRE_SEED is set, \`wire restore\` may bring back an existing identity. \`wire doctor\` checks everything.`
 
 type Wire = { client: string; env: Record<string, string> }
 
@@ -275,6 +283,8 @@ function chat(entries: readonly FeedEntry[], to: string | null, now: number): Ch
   const taken = new Set<string>()
   const verified = new Set<string>()
   const lastJoin = new Map<string, number>()
+  // Per contact: the exact message ids the other side confirmed, and (from older relays) "everything up to".
+  const deliveredIds = new Map<string, Set<number>>()
   const delivered = new Map<string, number>()
   let title = to !== null && to.endsWith('/general') ? TITLE_OF_DEFAULT : ''
 
@@ -291,8 +301,14 @@ function chat(entries: readonly FeedEntry[], to: string | null, now: number): Ch
       lastJoin.set(one.contact, index)
     }
 
-    if (one.kind === 'acked' && one.contact !== undefined && one.upto !== undefined) {
-      delivered.set(one.contact, Math.max(delivered.get(one.contact) ?? 0, one.upto))
+    if (one.kind === 'acked' && one.contact !== undefined) {
+      if (one.ids !== undefined) {
+        const set = deliveredIds.get(one.contact) ?? new Set<number>()
+        one.ids.forEach(id => set.add(id))
+        deliveredIds.set(one.contact, set)
+      } else if (one.upto !== undefined) {
+        delivered.set(one.contact, Math.max(delivered.get(one.contact) ?? 0, one.upto))
+      }
     }
 
     if (one.ref === to && one.title !== undefined && one.title !== '' && one.title !== '?') {
@@ -375,8 +391,10 @@ function chat(entries: readonly FeedEntry[], to: string | null, now: number): Ch
   const mineEntry = lastMineEntry as FeedEntry | null
 
   if (mine !== null && mineEntry !== null) {
-    const upto = delivered.get(mineEntry.contact ?? '') ?? 0
-    mine.state = mineEntry.id !== undefined && mineEntry.id <= upto ? 'delivered' : mineEntry.waiting === true ? 'waiting' : 'sent'
+    const contact = mineEntry.contact ?? ''
+    const id = mineEntry.id
+    const isDelivered = id !== undefined && ((deliveredIds.get(contact)?.has(id) ?? false) || id <= (delivered.get(contact) ?? 0))
+    mine.state = isDelivered ? 'delivered' : mineEntry.waiting === true ? 'waiting' : 'sent'
   }
 
   return { contact: to === null ? '' : (to.split('/')[0] ?? ''), title, items }
@@ -676,7 +694,7 @@ export const register: Register = on => {
     const started = await next(e)
     await $.command.register({
       name: 'wire',
-      description: 'Open the wire chat panel; /wire <contact>/<conversation> switches conversation',
+      description: 'Open the wire chat panel; /wire <contact>/<conversation> switches conversation; /wire doctor checks the setup',
     })
     ensureListening($)
     void watchPresence($).catch(() => undefined)
@@ -697,6 +715,12 @@ export const register: Register = on => {
     const parts: string[] = []
     const wanted = e.args.trim()
     ensureListening($)
+
+    if (wanted === 'doctor') {
+      const doctor = await $.process.run(['node', client, 'doctor'], { env })
+
+      return { text: `${doctor.stdout}${doctor.stderr}`.trim() }
+    }
 
     if (wanted === 'listen' || wanted === 'status') {
       // Restarting is the listener's own business: a new one takes over this session's stream.
